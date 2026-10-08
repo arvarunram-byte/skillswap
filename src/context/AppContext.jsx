@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { db, getSupabaseConfig } from '../lib/supabase';
+import { db } from '../lib/supabase';
 import { getSocket } from '../lib/socket';
 import confetti from 'canvas-confetti';
 
@@ -7,16 +7,18 @@ const AppContext = createContext();
 
 export function AppProvider({ children }) {
   const [profiles, setProfiles] = useState([]);
-  const [currentUser, setCurrentUser] = useState(null);
+  const [currentUser, setCurrentUser] = useState(() => {
+    const saved = localStorage.getItem('skillswap_current_user');
+    return saved ? JSON.parse(saved) : null;
+  });
   const [activeSession, setActiveSession] = useState(null);
   const [isQuizOpen, setIsQuizOpen] = useState(false);
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [transactions, setTransactions] = useState([]);
   const [activeTab, setActiveTab] = useState('matchmaker');
   const [notification, setNotification] = useState(null);
 
-  // Load latest data from DB
+  // Load latest real data
   const refreshData = useCallback(async () => {
     const users = await db.getProfiles();
     setProfiles(users);
@@ -24,35 +26,28 @@ export function AppProvider({ children }) {
     setTransactions(txs);
   }, []);
 
-  // Initialize and attach real-time listeners
+  // Sync current user with latest profile
   useEffect(() => {
-    refreshData().then(() => {
-      // Pick initial user
-      const storedUserId = localStorage.getItem('skillswap_active_user_id');
-      db.getProfiles().then(users => {
-        if (users && users.length > 0) {
-          const found = storedUserId ? users.find(u => u.id === storedUserId) : users[0];
-          setCurrentUser(found || users[0]);
-        }
-      });
-    });
+    refreshData();
 
-    // 1. Socket.io Real-Time Listener
+    // Socket real-time broadcast listener
     const socket = getSocket();
-    socket.on('token-balance-updated', (data) => {
-      console.log('⚡ Real-time token settlement received via WebSocket:', data);
+    socket.on('token-balance-updated', () => {
       refreshData();
     });
 
-    // 2. Cross-tab LocalStorage Real-Time Listener
+    // Cross-tab real-time listener
     const handleStorageChange = (e) => {
       if (e.key === 'skillswap_profiles' || e.key === 'skillswap_tx') {
         refreshData();
       }
+      if (e.key === 'skillswap_current_user') {
+        setCurrentUser(e.newValue ? JSON.parse(e.newValue) : null);
+      }
     };
     window.addEventListener('storage', handleStorageChange);
 
-    // 3. Supabase Cloud Realtime Channel Listener
+    // Supabase cloud realtime listener
     const unsubscribeSupabase = db.subscribeToChanges(() => {
       refreshData();
     });
@@ -63,12 +58,15 @@ export function AppProvider({ children }) {
     };
   }, [refreshData]);
 
-  // Sync currentUser with profiles state
+  // Keep currentUser synced
   useEffect(() => {
     if (currentUser) {
-      const fresh = profiles.find(p => p.id === currentUser.id);
-      if (fresh && (fresh.wallet_balance !== currentUser.wallet_balance || fresh.skills_teach.length !== currentUser.skills_teach.length)) {
-        setCurrentUser(fresh);
+      const fresh = profiles.find(p => p.id === currentUser.id || p.email === currentUser.email);
+      if (fresh) {
+        if (fresh.wallet_balance !== currentUser.wallet_balance || fresh.skills_teach.length !== currentUser.skills_teach.length) {
+          setCurrentUser(fresh);
+          localStorage.setItem('skillswap_current_user', JSON.stringify(fresh));
+        }
       }
     }
   }, [profiles, currentUser]);
@@ -80,27 +78,53 @@ export function AppProvider({ children }) {
     }, 4500);
   };
 
-  // Switch student profile
-  const switchUser = (userId) => {
-    const selected = profiles.find(p => p.id === userId);
-    if (selected) {
-      setCurrentUser(selected);
-      localStorage.setItem('skillswap_active_user_id', selected.id);
-      showNotification(`Switched profile to ${selected.full_name} (${selected.wallet_balance} Credits)`, 'info');
+  // Real User Registration
+  const register = async (userData) => {
+    const newProfile = await db.registerUser(userData);
+    setCurrentUser(newProfile);
+    localStorage.setItem('skillswap_current_user', JSON.stringify(newProfile));
+    await refreshData();
+    showNotification(`🎉 Registration successful! 1 Free Welcome Token added to your wallet!`, 'success');
+    return newProfile;
+  };
+
+  // Real User Login
+  const login = async (email, password) => {
+    const res = await db.loginUser(email, password);
+    if (res.success) {
+      setCurrentUser(res.user);
+      localStorage.setItem('skillswap_current_user', JSON.stringify(res.user));
+      showNotification(`Welcome back, ${res.user.full_name}!`, 'success');
+      return true;
+    } else {
+      showNotification(res.message, 'danger');
+      return false;
     }
   };
 
-  // Launch live peer session
+  // Real Logout
+  const logout = () => {
+    setCurrentUser(null);
+    setActiveSession(null);
+    localStorage.removeItem('skillswap_current_user');
+    showNotification('Logged out successfully.', 'info');
+  };
+
+  // Start Real Peer Session
   const startSession = (partner, topic, role = 'learner') => {
+    if (!currentUser) {
+      showNotification('Please register or log in first.', 'warning');
+      return false;
+    }
+
     const teacher = role === 'teacher' ? currentUser : partner;
     const learner = role === 'learner' ? currentUser : partner;
 
     if (learner.wallet_balance < 1) {
-      showNotification(`Insufficient Time-Credits! ${learner.full_name} needs 1 Time-Credit Token to join. Teach a peer first!`, 'danger');
+      showNotification(`Insufficient Time-Credits! ${learner.full_name} needs at least 1 Time-Credit Token. Teach a peer to earn credits!`, 'danger');
       return false;
     }
 
-    // Unique room ID based on both student IDs & topic for real-time WebRTC pairing
     const sortedIds = [teacher.id, learner.id].sort().join('_');
     const roomId = `room_${sortedIds}_${encodeURIComponent(topic || 'lesson')}`;
 
@@ -111,7 +135,7 @@ export function AppProvider({ children }) {
       learner,
       topic: topic || (role === 'learner' ? partner.skills_teach[0] : currentUser.skills_teach[0]),
       startedAt: Date.now(),
-      codeContent: `# SkillSwap Live Real-Time Code Space\n# Topic: ${topic}\n# Teacher: ${teacher.full_name} | Learner: ${learner.full_name}\n\ndef execute_peer_lesson():\n    print("Real-time collaborative room connected!")\n\nexecute_peer_lesson()`,
+      codeContent: `# SkillSwap Real-Time Peer Code Space\n# Topic: ${topic}\n# Teacher: ${teacher.full_name} | Learner: ${learner.full_name}\n\ndef live_solution():\n    print("Real-time collaborative room connected!")\n\nlive_solution()`,
       notesContent: `### Real-Time Session Notes: ${topic}\n- Key Concept 1\n- Real-world application\n- Hands-on exercise`,
       messages: []
     };
@@ -122,35 +146,31 @@ export function AppProvider({ children }) {
     return true;
   };
 
-  // Trigger End of Session -> Launches AI Proof-of-Learning Quiz
   const triggerEndSession = () => {
     if (!activeSession) return;
     setIsQuizOpen(true);
   };
 
-  // Complete Quiz & Settle Time-Credit Tokens in Real Time
+  // Complete Quiz & Settle Tokens in Real Time
   const completeQuizAndSettleTokens = async (scorePercent) => {
     if (!activeSession) return { success: false };
 
-    const isPassed = scorePercent >= 60; // 60% requirement per PDF
+    const isPassed = scorePercent >= 60;
 
     if (isPassed) {
-      // Confetti explosion
       confetti({
         particleCount: 150,
         spread: 90,
         origin: { y: 0.6 }
       });
 
-      // Settle Time-Credit token
-      const result = await db.transferToken({
+      await db.transferToken({
         fromUserId: activeSession.learner.id,
         toUserId: activeSession.teacher.id,
         sessionId: activeSession.id,
         topic: activeSession.topic
       });
 
-      // Broadcast real-time token settlement across WebSockets
       const socket = getSocket();
       socket.emit('token-transfer-broadcast', {
         from: activeSession.learner.id,
@@ -175,7 +195,7 @@ export function AppProvider({ children }) {
     }
   };
 
-  // Update profile skills
+  // Real-Time Skill Matrix Update
   const updateSkills = async (teachSkills, learnSkills) => {
     if (!currentUser) return;
     const updated = {
@@ -184,6 +204,8 @@ export function AppProvider({ children }) {
       skills_learn: learnSkills
     };
     await db.updateProfile(updated);
+    setCurrentUser(updated);
+    localStorage.setItem('skillswap_current_user', JSON.stringify(updated));
     await refreshData();
     showNotification('Skills Matrix updated in real time!', 'success');
   };
@@ -194,7 +216,9 @@ export function AppProvider({ children }) {
         profiles,
         currentUser,
         setCurrentUser,
-        switchUser,
+        register,
+        login,
+        logout,
         activeSession,
         setActiveSession,
         startSession,
@@ -203,8 +227,6 @@ export function AppProvider({ children }) {
         setIsQuizOpen,
         isSupabaseModalOpen,
         setIsSupabaseModalOpen,
-        isAuthModalOpen,
-        setIsAuthModalOpen,
         transactions,
         activeTab,
         setActiveTab,

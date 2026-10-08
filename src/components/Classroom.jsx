@@ -481,15 +481,6 @@ export default function Classroom() {
             <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)', fontFamily: 'var(--font-body)' }}>/ 45:00 min</span>
           </div>
 
-          {/* Fast-Forward Helper for presentations */}
-          <button
-            onClick={handleFastForward}
-            title="Fast forward timer to 45 mins to simulate full lesson duration for demo"
-            className="btn btn-secondary btn-sm"
-            style={{ fontSize: '0.75rem', padding: '6px 10px', color: '#fbbf24', borderColor: 'rgba(245, 158, 11, 0.4)' }}
-          >
-            <FastForward size={14} /> 45m Jump
-          </button>
 
           {/* End Session Button -> Triggers AI Quiz */}
           <button

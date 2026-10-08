@@ -6,11 +6,11 @@ import Matchmaker from './components/Matchmaker';
 import Classroom from './components/Classroom';
 import QuizModal from './components/QuizModal';
 import SupabaseConfigModal from './components/SupabaseConfigModal';
-import AuthModal from './components/AuthModal';
+import AuthScreen from './components/AuthScreen';
 import { GraduationCap, Database } from 'lucide-react';
 
 function MainContent() {
-  const { activeTab, notification, setIsAuthModalOpen, setIsSupabaseModalOpen } = useApp();
+  const { currentUser, activeTab, notification, setIsSupabaseModalOpen } = useApp();
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -44,17 +44,22 @@ function MainContent() {
       {/* Navigation */}
       <Navbar />
 
-      {/* Main Tab Area */}
+      {/* Main Area: If not logged in, show AuthScreen; otherwise show selected tab */}
       <main style={{ flex: 1, paddingBottom: '40px' }}>
-        {activeTab === 'matchmaker' && <Matchmaker />}
-        {activeTab === 'dashboard' && <Dashboard />}
-        {activeTab === 'classroom' && <Classroom />}
+        {!currentUser ? (
+          <AuthScreen />
+        ) : (
+          <>
+            {activeTab === 'matchmaker' && <Matchmaker />}
+            {activeTab === 'dashboard' && <Dashboard />}
+            {activeTab === 'classroom' && <Classroom />}
+          </>
+        )}
       </main>
 
       {/* Modals */}
       <QuizModal />
       <SupabaseConfigModal />
-      <AuthModal />
 
       {/* Footer */}
       <footer style={{
@@ -76,19 +81,14 @@ function MainContent() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
               <span style={{ fontWeight: 800, fontSize: '1.1rem', color: '#fff' }}>SkillSwap</span>
               <span className="badge badge-success">UN SDG 4 Aligned</span>
+              <span className="badge badge-token">100% Real-Time Live</span>
             </div>
             <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', maxWidth: '520px' }}>
-              Democratizing education through peer time-banking. Students exchange skills for free: 1 hour taught = 1 Time-Credit earned. Verified by Gemini AI Proof-of-Learning quizzes.
+              Democratizing education through pure peer-to-peer time-banking. Students exchange skills for free: 1 hour taught = 1 Time-Credit earned. Verified by Gemini AI Proof-of-Learning quizzes.
             </p>
           </div>
 
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-            <button
-              onClick={() => setIsAuthModalOpen(true)}
-              className="btn btn-secondary btn-sm"
-            >
-              <GraduationCap size={15} /> Join as Student
-            </button>
             <button
               onClick={() => setIsSupabaseModalOpen(true)}
               className="btn btn-secondary btn-sm"
@@ -111,8 +111,8 @@ function MainContent() {
           fontSize: '0.78rem',
           color: 'var(--text-dim)'
         }}>
-          <span>© 2026 SkillSwap Network. Built for Students Worldwide.</span>
-          <span>Zero Tuition Fees • 100% Peer-to-Peer</span>
+          <span>© 2026 SkillSwap Network. Real-Time Peer Education.</span>
+          <span>Zero Tuition Fees • 100% Real-Time P2P</span>
         </div>
       </footer>
 

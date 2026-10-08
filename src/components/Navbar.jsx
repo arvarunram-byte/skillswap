@@ -2,21 +2,20 @@ import React from 'react';
 import { useApp } from '../context/AppContext';
 import { getSupabaseConfig } from '../lib/supabase';
 import { 
-  Sparkles, 
   Coins, 
   Users, 
   Video, 
   LayoutDashboard, 
   Database, 
-  UserCheck,
-  GraduationCap
+  LogOut, 
+  GraduationCap,
+  UserPlus
 } from 'lucide-react';
 
 export default function Navbar() {
   const { 
     currentUser, 
-    profiles, 
-    switchUser, 
+    logout, 
     activeTab, 
     setActiveTab, 
     activeSession, 
@@ -28,7 +27,7 @@ export default function Navbar() {
   return (
     <header style={{
       borderBottom: '1px solid var(--border-subtle)',
-      background: 'rgba(11, 15, 25, 0.85)',
+      background: 'rgba(11, 15, 25, 0.9)',
       backdropFilter: 'blur(16px)',
       position: 'sticky',
       top: 0,
@@ -66,8 +65,8 @@ export default function Navbar() {
               <span style={{ fontSize: '1.3rem', fontWeight: '800', letterSpacing: '-0.02em', background: 'linear-gradient(135deg, #fff 30%, #a855f7 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
                 SkillSwap
               </span>
-              <span style={{ fontSize: '0.65rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(99,102,241,0.2)', color: '#a5b4fc', border: '1px solid rgba(99,102,241,0.3)', fontWeight: 600 }}>
-                AI Time-Bank
+              <span style={{ fontSize: '0.65rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(16,185,129,0.2)', color: '#34d399', border: '1px solid rgba(16,185,129,0.3)', fontWeight: 700 }}>
+                REAL-TIME LIVE
               </span>
             </div>
             <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
@@ -77,99 +76,52 @@ export default function Navbar() {
         </div>
 
         {/* Navigation Tabs */}
-        <nav style={{ display: 'flex', gap: '8px', background: 'rgba(255,255,255,0.04)', padding: '4px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
-          <button
-            onClick={() => setActiveTab('matchmaker')}
-            className={`btn btn-sm ${activeTab === 'matchmaker' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ border: 'none' }}
-          >
-            <Users size={16} />
-            Skill Matchmaker
-          </button>
-
-          <button
-            onClick={() => setActiveTab('dashboard')}
-            className={`btn btn-sm ${activeTab === 'dashboard' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ border: 'none' }}
-          >
-            <LayoutDashboard size={16} />
-            My Dashboard
-          </button>
-
-          <button
-            onClick={() => setActiveTab('classroom')}
-            className={`btn btn-sm ${activeTab === 'classroom' ? 'btn-primary' : 'btn-secondary'}`}
-            style={{ border: 'none', position: 'relative' }}
-          >
-            <Video size={16} />
-            Peer Classroom
-            {activeSession && (
-              <span style={{
-                position: 'absolute',
-                top: '4px',
-                right: '4px',
-                width: '8px',
-                height: '8px',
-                borderRadius: '50%',
-                background: '#10b981',
-                boxShadow: '0 0 8px #10b981'
-              }} />
-            )}
-          </button>
-        </nav>
-
-        {/* Right Controls: User Switcher, Wallet Balance, Supabase */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          {/* Quick Demo Switcher */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Demo Student:</span>
-            <select
-              value={currentUser?.id || ''}
-              onChange={(e) => switchUser(e.target.value)}
-              style={{
-                background: 'rgba(31, 41, 55, 0.8)',
-                color: 'var(--text-main)',
-                border: '1px solid var(--border-subtle)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '5px 8px',
-                fontSize: '0.82rem',
-                outline: 'none',
-                cursor: 'pointer'
-              }}
+        {currentUser && (
+          <nav style={{ display: 'flex', gap: '8px', background: 'rgba(255,255,255,0.04)', padding: '4px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+            <button
+              onClick={() => setActiveTab('matchmaker')}
+              className={`btn btn-sm ${activeTab === 'matchmaker' ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ border: 'none' }}
             >
-              {profiles.map(p => (
-                <option key={p.id} value={p.id}>
-                  {p.full_name} ({p.skills_teach[0]})
-                </option>
-              ))}
-            </select>
-          </div>
+              <Users size={16} />
+              Skill Matchmaker
+            </button>
 
-          {/* Time-Credit Wallet Balance Widget */}
-          <div 
-            onClick={() => setActiveTab('dashboard')}
-            title="Time-Credit Token Wallet Balance. Teach 1 hour to earn 1 token!"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '6px 14px',
-              background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(217, 119, 6, 0.25) 100%)',
-              border: '1px solid rgba(245, 158, 11, 0.4)',
-              borderRadius: 'var(--radius-full)',
-              cursor: 'pointer',
-              boxShadow: '0 0 15px rgba(245, 158, 11, 0.15)'
-            }}
-          >
-            <Coins size={16} color="#fbbf24" />
-            <span style={{ fontWeight: '700', color: '#fbbf24', fontSize: '0.9rem' }}>
-              {currentUser?.wallet_balance ?? 0}
-            </span>
-            <span style={{ fontSize: '0.75rem', color: '#fde68a', fontWeight: '500' }}>
-              Credits
-            </span>
-          </div>
+            <button
+              onClick={() => setActiveTab('dashboard')}
+              className={`btn btn-sm ${activeTab === 'dashboard' ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ border: 'none' }}
+            >
+              <LayoutDashboard size={16} />
+              My Dashboard
+            </button>
 
+            <button
+              onClick={() => setActiveTab('classroom')}
+              className={`btn btn-sm ${activeTab === 'classroom' ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ border: 'none', position: 'relative' }}
+            >
+              <Video size={16} />
+              Peer Classroom
+              {activeSession && (
+                <span style={{
+                  position: 'absolute',
+                  top: '4px',
+                  right: '4px',
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  background: '#10b981',
+                  boxShadow: '0 0 8px #10b981'
+                }} />
+              )}
+            </button>
+          </nav>
+        )}
+
+        {/* Right Controls: Real Wallet, Profile, Logout & Supabase */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          
           {/* Supabase Config Pill */}
           <button
             onClick={() => setIsSupabaseModalOpen(true)}
@@ -191,21 +143,70 @@ export default function Navbar() {
             {supabaseConfig.isConfigured ? 'Supabase Connected' : 'Supabase Setup'}
           </button>
 
-          {/* User Avatar */}
-          {currentUser && (
-            <img
-              src={currentUser.avatar_url}
-              alt={currentUser.full_name}
-              style={{
-                width: '36px',
-                height: '36px',
-                borderRadius: '50%',
-                objectFit: 'cover',
-                border: '2px solid var(--accent-primary)',
-                boxShadow: '0 0 10px rgba(99,102,241,0.4)'
-              }}
-            />
+          {currentUser ? (
+            <>
+              {/* Real Time-Credit Wallet Balance Widget */}
+              <div 
+                onClick={() => setActiveTab('dashboard')}
+                title="Your live Time-Credit balance. 1 token = 1 hour of peer learning."
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '6px 14px',
+                  background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(217, 119, 6, 0.25) 100%)',
+                  border: '1px solid rgba(245, 158, 11, 0.4)',
+                  borderRadius: 'var(--radius-full)',
+                  cursor: 'pointer',
+                  boxShadow: '0 0 15px rgba(245, 158, 11, 0.15)'
+                }}
+              >
+                <Coins size={16} color="#fbbf24" />
+                <span style={{ fontWeight: '700', color: '#fbbf24', fontSize: '0.9rem' }}>
+                  {currentUser.wallet_balance}
+                </span>
+                <span style={{ fontSize: '0.75rem', color: '#fde68a', fontWeight: '500' }}>
+                  Credits
+                </span>
+              </div>
+
+              {/* User Avatar & Name */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <img
+                  src={currentUser.avatar_url}
+                  alt={currentUser.full_name}
+                  style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: '50%',
+                    objectFit: 'cover',
+                    border: '2px solid var(--accent-primary)',
+                    boxShadow: '0 0 10px rgba(99,102,241,0.4)'
+                  }}
+                />
+                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#e2e8f0' }}>
+                  {currentUser.full_name}
+                </span>
+              </div>
+
+              {/* Real Logout Button */}
+              <button
+                onClick={logout}
+                title="Log out of your account"
+                className="btn btn-secondary btn-sm"
+                style={{ padding: '6px 10px', fontSize: '0.75rem', color: '#f87171', borderColor: 'rgba(239,68,68,0.3)' }}
+              >
+                <LogOut size={14} /> Exit
+              </button>
+            </>
+          ) : (
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <span className="badge badge-teach" style={{ padding: '6px 12px', fontSize: '0.82rem' }}>
+                <UserPlus size={14} /> Real Student Sign-Up Active
+              </span>
+            </div>
           )}
+
         </div>
       </div>
     </header>

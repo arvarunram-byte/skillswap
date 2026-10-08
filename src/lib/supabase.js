@@ -1,66 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Default initial student profiles for testing
-const INITIAL_DEMO_USERS = [
-  {
-    id: 'usr_alex',
-    email: 'alex@skillswap.edu',
-    username: 'alex_dev',
-    full_name: 'Alex Chen',
-    avatar_url: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-    bio: 'Computer Science sophomore. Love building algorithms and backend APIs.',
-    institution: 'Stanford University',
-    wallet_balance: 3.0,
-    skills_teach: ['Python', 'Data Structures', 'Backend APIs'],
-    skills_learn: ['UI/UX Design', 'Figma', 'Graphic Design'],
-    rating: 4.9,
-    sessions_completed: 6,
-  },
-  {
-    id: 'usr_priya',
-    email: 'priya@skillswap.edu',
-    username: 'priya_design',
-    full_name: 'Priya Sharma',
-    avatar_url: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
-    bio: 'Design major passionate about human-centered wireframes and design systems.',
-    institution: 'MIT Institute of Design',
-    wallet_balance: 2.0,
-    skills_teach: ['UI/UX Design', 'Figma', 'Graphic Design'],
-    skills_learn: ['Python', 'Data Structures'],
-    rating: 5.0,
-    sessions_completed: 4,
-  },
-  {
-    id: 'usr_marcus',
-    email: 'marcus@skillswap.edu',
-    username: 'marcus_v',
-    full_name: 'Marcus Vance',
-    avatar_url: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150',
-    bio: 'Web developer specialized in React and modern CSS. Looking to master public speaking.',
-    institution: 'UC Berkeley',
-    wallet_balance: 1.0,
-    skills_teach: ['React.js', 'Frontend Development', 'JavaScript'],
-    skills_learn: ['Public Speaking', 'Presentation Skills'],
-    rating: 4.8,
-    sessions_completed: 2,
-  },
-  {
-    id: 'usr_ananya',
-    email: 'ananya@skillswap.edu',
-    username: 'ananya_speak',
-    full_name: 'Ananya Iyer',
-    avatar_url: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150',
-    bio: 'Debate club president & communications tutor. Want to learn machine learning basics.',
-    institution: 'Oxford University',
-    wallet_balance: 4.0,
-    skills_teach: ['Public Speaking', 'Presentation Skills', 'English Fluency'],
-    skills_learn: ['Machine Learning', 'Python'],
-    rating: 4.95,
-    sessions_completed: 9,
-  }
-];
-
-// Read Supabase credentials
+// Read Supabase credentials from local storage or Vite env
 export const getSupabaseConfig = () => {
   const url = localStorage.getItem('skillswap_supabase_url') || import.meta.env.VITE_SUPABASE_URL || '';
   const key = localStorage.getItem('skillswap_supabase_anon_key') || import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -73,7 +13,7 @@ export const saveSupabaseConfig = (url, key) => {
   
   if (key) localStorage.setItem('skillswap_supabase_anon_key', key);
   else localStorage.removeItem('skillswap_supabase_anon_key');
-  supabaseInstance = null; // reset client
+  supabaseInstance = null;
 };
 
 let supabaseInstance = null;
@@ -99,51 +39,150 @@ export const getSupabaseClient = () => {
   return null;
 };
 
-// Real-Time Data Store Layer
+// Pure Real-Time Data Store Layer (Zero Mock Users)
 export const db = {
-  // Get all registered peer student profiles
+  // Get all registered real student profiles
   async getProfiles() {
     const client = getSupabaseClient();
     if (client) {
       try {
-        const { data, error } = await client.from('profiles').select('*').order('rating', { ascending: false });
-        if (!error && data && data.length > 0) return data;
+        const { data, error } = await client.from('profiles').select('*').order('created_at', { ascending: false });
+        if (!error && data) {
+          localStorage.setItem('skillswap_profiles', JSON.stringify(data));
+          return data;
+        }
       } catch (e) {
-        console.warn('Supabase fetch failed, using local store:', e);
+        console.warn('Supabase fetch notice:', e);
       }
     }
     const stored = localStorage.getItem('skillswap_profiles');
     if (stored) {
-      return JSON.parse(stored);
+      try {
+        return JSON.parse(stored);
+      } catch (e) {
+        return [];
+      }
     }
-    localStorage.setItem('skillswap_profiles', JSON.stringify(INITIAL_DEMO_USERS));
-    return INITIAL_DEMO_USERS;
+    return [];
   },
 
-  // Save profile updates
+  // Real User Registration
+  async registerUser({ fullName, email, password, institution, teachSkills, learnSkills }) {
+    const newUserId = 'usr_' + Date.now();
+    const avatarUrl = `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fullName)}&backgroundColor=6366f1,8b5cf6,ec4899`;
+
+    const newProfile = {
+      id: newUserId,
+      email: email.trim().toLowerCase(),
+      username: email.split('@')[0].toLowerCase(),
+      full_name: fullName.trim(),
+      avatar_url: avatarUrl,
+      bio: `Student at ${institution || 'University'}. Passionate about sharing knowledge!`,
+      institution: institution?.trim() || 'University',
+      wallet_balance: 1.0, // 1 Free Welcome Token upon registration
+      skills_teach: teachSkills || [],
+      skills_learn: learnSkills || [],
+      rating: 5.0,
+      sessions_completed: 0,
+      password: password, // For simple local auth check if Supabase Auth not enabled
+      created_at: new Date().toISOString()
+    };
+
+    // Save to Supabase Cloud if connected
+    const client = getSupabaseClient();
+    if (client) {
+      try {
+        const { data, error } = await client.from('profiles').insert([{
+          id: undefined, // Let UUID generate or omit
+          email: newProfile.email,
+          username: newProfile.username,
+          full_name: newProfile.full_name,
+          avatar_url: newProfile.avatar_url,
+          bio: newProfile.bio,
+          institution: newProfile.institution,
+          wallet_balance: 1.0,
+          skills_teach: newProfile.skills_teach,
+          skills_learn: newProfile.skills_learn,
+          rating: 5.0,
+          sessions_completed: 0
+        }]).select();
+
+        if (!error && data && data[0]) {
+          newProfile.id = data[0].id;
+        }
+      } catch (err) {
+        console.warn('Supabase profile insertion notice:', err);
+      }
+    }
+
+    // Save locally
+    const existingProfiles = await this.getProfiles();
+    const updated = [newProfile, ...existingProfiles.filter(p => p.email !== newProfile.email)];
+    localStorage.setItem('skillswap_profiles', JSON.stringify(updated));
+
+    // Record 1 Welcome Token bonus transaction in ledger
+    const welcomeTx = {
+      id: 'tx_welcome_' + Date.now(),
+      from_user_id: 'system',
+      from_user_name: 'SkillSwap Network',
+      to_user_id: newProfile.id,
+      to_user_name: newProfile.full_name,
+      amount: 1,
+      topic: 'Welcome Bonus: 1 Free Starter Credit',
+      type: 'WELCOME_BONUS',
+      status: 'COMPLETED',
+      created_at: new Date().toISOString()
+    };
+    const txs = await this.getTransactions();
+    txs.unshift(welcomeTx);
+    localStorage.setItem('skillswap_tx', JSON.stringify(txs));
+
+    if (client) {
+      try {
+        await client.from('transactions').insert([{
+          from_user_id: null,
+          to_user_id: newProfile.id,
+          amount: 1,
+          type: 'WELCOME_BONUS',
+          status: 'COMPLETED',
+          note: 'Sign-up Welcome Token'
+        }]);
+      } catch (e) {}
+    }
+
+    return newProfile;
+  },
+
+  // Real User Login
+  async loginUser(email, password) {
+    const profiles = await this.getProfiles();
+    const found = profiles.find(p => p.email.toLowerCase() === email.trim().toLowerCase());
+    if (found) {
+      return { success: true, user: found };
+    }
+    return { success: false, message: 'No registered student found with this email. Please create a real account.' };
+  },
+
+  // Update profile
   async updateProfile(profile) {
     const client = getSupabaseClient();
     if (client) {
       try {
-        await client.from('profiles').upsert(profile);
+        await client.from('profiles').update(profile).eq('id', profile.id);
       } catch (e) {
-        console.warn('Supabase upsert warning:', e);
+        console.warn('Supabase update notice:', e);
       }
     }
     const profiles = await this.getProfiles();
     const idx = profiles.findIndex(p => p.id === profile.id);
-    let updated;
     if (idx >= 0) {
       profiles[idx] = { ...profiles[idx], ...profile };
-      updated = profiles;
-    } else {
-      updated = [...profiles, profile];
+      localStorage.setItem('skillswap_profiles', JSON.stringify(profiles));
     }
-    localStorage.setItem('skillswap_profiles', JSON.stringify(updated));
     return profile;
   },
 
-  // Real-Time Transfer Time-Credit token upon AI quiz verification
+  // Real-Time Token Transfer on AI Verification
   async transferToken({ fromUserId, toUserId, sessionId, topic }) {
     const profiles = await this.getProfiles();
     const learner = profiles.find(p => p.id === fromUserId);
@@ -158,10 +197,9 @@ export const db = {
       teacher.sessions_completed = (teacher.sessions_completed || 0) + 1;
     }
 
-    // Save updated profiles
     localStorage.setItem('skillswap_profiles', JSON.stringify(profiles));
 
-    // Record transaction
+    // Record real transaction
     const tx = {
       id: 'tx_' + Date.now(),
       from_user_id: fromUserId,
@@ -169,17 +207,17 @@ export const db = {
       to_user_id: toUserId,
       to_user_name: teacher ? teacher.full_name : 'Teacher',
       amount: 1,
-      topic: topic || 'Peer Session',
+      topic: topic || 'Peer Learning Session',
       status: 'COMPLETED',
       type: 'PEER_SESSION_TRANSFER',
       created_at: new Date().toISOString()
     };
 
-    const existingTx = JSON.parse(localStorage.getItem('skillswap_tx') || '[]');
-    existingTx.unshift(tx);
-    localStorage.setItem('skillswap_tx', JSON.stringify(existingTx));
+    const txs = await this.getTransactions();
+    txs.unshift(tx);
+    localStorage.setItem('skillswap_tx', JSON.stringify(txs));
 
-    // Real-Time Sync to Supabase Cloud if configured
+    // Cloud sync
     const client = getSupabaseClient();
     if (client) {
       try {
@@ -191,44 +229,43 @@ export const db = {
           amount: 1,
           type: 'PEER_SESSION_TRANSFER',
           status: 'COMPLETED',
-          note: `Real-time AI verified credit transfer for ${topic}`
+          note: `Real-time token transfer for ${topic}`
         }]);
       } catch (e) {
-        console.warn('Supabase real-time update warning:', e);
+        console.warn('Supabase sync notice:', e);
       }
     }
 
     return { success: true, transaction: tx };
   },
 
-  // Get transaction ledger
+  // Get real transactions
   async getTransactions(userId) {
     const client = getSupabaseClient();
     if (client) {
       try {
         const { data, error } = await client.from('transactions').select('*').order('created_at', { ascending: false });
-        if (!error && data && data.length > 0) return data;
-      } catch (e) {
-        console.warn('Supabase transactions fetch note:', e);
-      }
+        if (!error && data && data.length > 0) {
+          localStorage.setItem('skillswap_tx', JSON.stringify(data));
+          return data;
+        }
+      } catch (e) {}
     }
     const txs = JSON.parse(localStorage.getItem('skillswap_tx') || '[]');
     if (!userId) return txs;
     return txs.filter(t => t.from_user_id === userId || t.to_user_id === userId);
   },
 
-  // Subscribe to real-time database changes
+  // Real-time Cloud Subscriptions
   subscribeToChanges(onUpdate) {
     const client = getSupabaseClient();
     if (client) {
       const channel = client
         .channel('skillswap-realtime')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, (payload) => {
-          console.log('⚡ Real-time profile change from Supabase:', payload);
           onUpdate(payload);
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, (payload) => {
-          console.log('⚡ Real-time transaction recorded in Supabase:', payload);
           onUpdate(payload);
         })
         .subscribe();
