@@ -7,6 +7,7 @@ import Classroom from './components/Classroom';
 import QuizModal from './components/QuizModal';
 import SupabaseConfigModal from './components/SupabaseConfigModal';
 import AuthScreen from './components/AuthScreen';
+import IncomingRequestModal from './components/IncomingRequestModal';
 import { GraduationCap, Database } from 'lucide-react';
 
 function MainContent() {
@@ -58,6 +59,7 @@ function MainContent() {
       </main>
 
       {/* Modals */}
+      <IncomingRequestModal />
       <QuizModal />
       <SupabaseConfigModal />
 

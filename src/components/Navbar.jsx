@@ -15,6 +15,7 @@ import {
 export default function Navbar() {
   const { 
     currentUser, 
+    onlineUserIds,
     logout, 
     activeTab, 
     setActiveTab, 
@@ -65,8 +66,9 @@ export default function Navbar() {
               <span style={{ fontSize: '1.3rem', fontWeight: '800', letterSpacing: '-0.02em', background: 'linear-gradient(135deg, #fff 30%, #a855f7 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
                 SkillSwap
               </span>
-              <span style={{ fontSize: '0.65rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(16,185,129,0.2)', color: '#34d399', border: '1px solid rgba(16,185,129,0.3)', fontWeight: 700 }}>
-                REAL-TIME LIVE
+              <span style={{ fontSize: '0.72rem', padding: '3px 8px', borderRadius: '12px', background: 'rgba(16,185,129,0.15)', color: '#34d399', border: '1px solid rgba(16,185,129,0.3)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }} />
+                {onlineUserIds.length > 0 ? `${onlineUserIds.length} Online Now` : '1 Online'}
               </span>
             </div>
             <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>

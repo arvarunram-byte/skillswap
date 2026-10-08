@@ -3,6 +3,7 @@ import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
@@ -14,7 +15,6 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = http.createServer(app);
 
-// Initialize Socket.io with CORS for WebRTC signaling and real-time collaboration
 const io = new SocketIOServer(server, {
   cors: {
     origin: '*',
@@ -23,27 +23,154 @@ const io = new SocketIOServer(server, {
 });
 
 const PORT = process.env.PORT || 3000;
+const PROFILES_FILE = path.join(__dirname, 'data', 'profiles.json');
 
 app.use(cors());
 app.use(express.json());
 
-// API Health Check
+// Helper to read profiles from server disk
+function readProfiles() {
+  try {
+    if (fs.existsSync(PROFILES_FILE)) {
+      const data = fs.readFileSync(PROFILES_FILE, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error('Error reading profiles.json:', err);
+  }
+  return [];
+}
+
+// Helper to save profiles to server disk
+function saveProfiles(profiles) {
+  try {
+    const dir = path.dirname(PROFILES_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(PROFILES_FILE, JSON.stringify(profiles, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Error writing profiles.json:', err);
+  }
+}
+
+// --- REST API ENDPOINTS ---
+
+// 1. Health check
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     project: 'SkillSwap: AI-Powered Peer-to-Peer Time-Credit Skill Exchange Network',
-    realtime: 'Active (WebSockets + WebRTC Signaling Enabled)',
+    realtime: 'Active (WebSockets + WebRTC + Live Presence + Notifications)',
+    onlineUsersCount: onlineUsers.size,
     time: new Date().toISOString()
   });
 });
 
-// Real-time AI Proof-of-Learning Quiz Generation API (Google Gemini 1.5 Flash)
-app.post('/api/generate-quiz', async (req, res) => {
-  const { topic, apiKey: clientApiKey } = req.body;
-  if (!topic) {
-    return res.status(400).json({ error: 'Topic is required' });
+// 2. Get all registered profiles (shared across all devices & browsers)
+app.get('/api/profiles', (req, res) => {
+  const profiles = readProfiles();
+  res.json(profiles);
+});
+
+// 3. Real User Registration
+app.post('/api/register', (req, res) => {
+  const { fullName, email, password, institution, teachSkills, learnSkills } = req.body;
+  if (!email || !fullName) {
+    return res.status(400).json({ error: 'Name and email are required' });
   }
 
+  const profiles = readProfiles();
+  const existing = profiles.find(p => p.email.toLowerCase() === email.trim().toLowerCase());
+  if (existing) {
+    return res.status(400).json({ error: 'A student is already registered with this email' });
+  }
+
+  const newProfile = {
+    id: 'usr_' + Date.now(),
+    email: email.trim().toLowerCase(),
+    username: email.split('@')[0].toLowerCase(),
+    full_name: fullName.trim(),
+    avatar_url: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fullName)}&backgroundColor=6366f1,8b5cf6,ec4899`,
+    bio: `Student at ${institution || 'University'}. Passionate about peer learning!`,
+    institution: institution?.trim() || 'University',
+    wallet_balance: 1.0, // 1 Free Welcome Token upon registration
+    skills_teach: teachSkills && teachSkills.length ? teachSkills : ['Python'],
+    skills_learn: learnSkills && learnSkills.length ? learnSkills : ['Web Design'],
+    rating: 5.0,
+    sessions_completed: 0,
+    password: password || '',
+    created_at: new Date().toISOString()
+  };
+
+  profiles.unshift(newProfile);
+  saveProfiles(profiles);
+
+  res.json({ success: true, profile: newProfile });
+});
+
+// 4. Real User Login
+app.post('/api/login', (req, res) => {
+  const { email, password } = req.body;
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+
+  const profiles = readProfiles();
+  const found = profiles.find(p => p.email.toLowerCase() === email.trim().toLowerCase());
+  if (found) {
+    if (password && found.password && found.password !== password) {
+      return res.status(401).json({ error: 'Incorrect password' });
+    }
+    return res.json({ success: true, profile: found });
+  }
+  return res.status(404).json({ error: 'No student found with this email. Please register.' });
+});
+
+// 5. Update Skills
+app.post('/api/update-skills', (req, res) => {
+  const { userId, skillsTeach, skillsLearn } = req.body;
+  const profiles = readProfiles();
+  const idx = profiles.findIndex(p => p.id === userId);
+  if (idx >= 0) {
+    profiles[idx].skills_teach = skillsTeach;
+    profiles[idx].skills_learn = skillsLearn;
+    saveProfiles(profiles);
+    return res.json({ success: true, profile: profiles[idx] });
+  }
+  res.status(404).json({ error: 'User not found' });
+});
+
+// 6. Transfer Token upon AI verification
+app.post('/api/transfer-token', (req, res) => {
+  const { fromUserId, toUserId, topic } = req.body;
+  const profiles = readProfiles();
+  const learner = profiles.find(p => p.id === fromUserId);
+  const teacher = profiles.find(p => p.id === toUserId);
+
+  if (learner && learner.wallet_balance >= 1) {
+    learner.wallet_balance = Number((learner.wallet_balance - 1).toFixed(2));
+    learner.sessions_completed = (learner.sessions_completed || 0) + 1;
+  }
+  if (teacher) {
+    teacher.wallet_balance = Number(((teacher.wallet_balance || 0) + 1).toFixed(2));
+    teacher.sessions_completed = (teacher.sessions_completed || 0) + 1;
+  }
+
+  saveProfiles(profiles);
+
+  // Broadcast token update to all connected sockets in real time
+  io.emit('token-balance-updated', {
+    fromUserId,
+    toUserId,
+    topic,
+    amount: 1
+  });
+
+  res.json({ success: true, learner, teacher });
+});
+
+// 7. Dynamic Gemini AI Quiz Generation
+app.post('/api/generate-quiz', async (req, res) => {
+  const { topic, apiKey: clientApiKey } = req.body;
   const apiKey = clientApiKey || process.env.GEMINI_API_KEY;
 
   if (apiKey) {
@@ -53,10 +180,10 @@ Generate exactly 3 high-quality multiple choice questions to verify the learner'
 Return STRICT JSON ONLY without markdown fences, in this exact format:
 [
   {
-    "question": "Clear question text?",
+    "question": "Question text?",
     "options": ["Option A", "Option B", "Option C", "Option D"],
     "answer": 0,
-    "explanation": "Why Option A is correct"
+    "explanation": "Why correct"
   }
 ]`;
 
@@ -79,12 +206,12 @@ Return STRICT JSON ONLY without markdown fences, in this exact format:
         }
       }
     } catch (err) {
-      console.error('Gemini Live API Error:', err.message);
+      console.error('Gemini Live API error:', err);
     }
   }
 
-  // Fallback dynamic questions if API key not present
-  return res.json({
+  // Fallback intelligent questions for topic
+  res.json({
     success: true,
     isRealAI: false,
     questions: [
@@ -126,14 +253,116 @@ Return STRICT JSON ONLY without markdown fences, in this exact format:
 });
 
 // ====================================================================
-// REAL-TIME WEBRTC SIGNALING & COLLABORATION (Socket.io)
+// REAL-TIME WEBRTC SIGNALING, PRESENCE, & LIVE NOTIFICATIONS
 // ====================================================================
-const rooms = new Map(); // roomId -> Set of socketIds
+
+// Map: socketId -> user profile
+const onlineUsers = new Map();
+// Map: userId -> Set of socketIds (to support multiple tabs/devices per user)
+const userSockets = new Map();
+// Map: roomId -> Set of socketIds
+const rooms = new Map();
+
+function broadcastOnlinePresence() {
+  const onlineUserIds = Array.from(new Set(Array.from(onlineUsers.values()).map(u => u.id)));
+  io.emit('online-presence-update', {
+    onlineUserIds,
+    count: onlineUserIds.length
+  });
+}
 
 io.on('connection', (socket) => {
-  console.log(`🔌 New client connected in real-time: ${socket.id}`);
+  console.log(`🔌 Client connected: ${socket.id}`);
 
-  // 1. Join Classroom Session Room
+  // 1. User Online Presence Registration
+  socket.on('register-presence', (user) => {
+    if (!user || !user.id) return;
+    onlineUsers.set(socket.id, user);
+
+    if (!userSockets.has(user.id)) {
+      userSockets.set(user.id, new Set());
+    }
+    userSockets.get(user.id).add(socket.id);
+
+    console.log(`🟢 ${user.full_name} is now ONLINE (${onlineUsers.size} connections)`);
+    broadcastOnlinePresence();
+  });
+
+  // 2. Real-Time Session Request & Notification ("oruthanaga teach pannura mari iruntha avangaluku notification poganum")
+  socket.on('request-session', ({ fromUser, toUserId, topic, role }) => {
+    console.log(`🔔 Session request: ${fromUser.full_name} -> User ID ${toUserId} for ${topic}`);
+    const targetSocketIds = userSockets.get(toUserId);
+
+    const requestId = 'req_' + Date.now();
+    const payload = {
+      requestId,
+      fromUser,
+      toUserId,
+      topic,
+      role: role || 'learner',
+      requestedAt: Date.now()
+    };
+
+    if (targetSocketIds && targetSocketIds.size > 0) {
+      targetSocketIds.forEach(targetId => {
+        io.to(targetId).emit('incoming-session-request', payload);
+      });
+      socket.emit('session-request-sent', { success: true, toUserId, topic });
+    } else {
+      // User is offline
+      socket.emit('session-request-error', { 
+        message: 'This student is currently offline. You can still schedule or leave a session request!' 
+      });
+    }
+  });
+
+  // 3. Teacher Accepts or Declines Session Request
+  socket.on('respond-session-request', ({ requestId, accepted, fromUser, toUser, topic }) => {
+    console.log(`Session response for ${requestId}: accepted=${accepted}`);
+    
+    // Create shared room ID for WebRTC
+    const sortedIds = [fromUser.id, toUser.id].sort().join('_');
+    const roomId = `room_${sortedIds}_${encodeURIComponent(topic || 'lesson')}`;
+
+    const callerSocketIds = userSockets.get(fromUser.id);
+    const calleeSocketIds = userSockets.get(toUser.id);
+
+    if (accepted) {
+      const sessionData = {
+        roomId,
+        teacher: toUser, // The one who accepted to teach
+        learner: fromUser,
+        topic,
+        startedAt: Date.now()
+      };
+
+      // Notify caller that teacher accepted!
+      if (callerSocketIds) {
+        callerSocketIds.forEach(id => {
+          io.to(id).emit('session-accepted-and-start', sessionData);
+        });
+      }
+
+      // Notify callee (teacher)
+      if (calleeSocketIds) {
+        calleeSocketIds.forEach(id => {
+          io.to(id).emit('session-accepted-and-start', sessionData);
+        });
+      }
+    } else {
+      // Declined
+      if (callerSocketIds) {
+        callerSocketIds.forEach(id => {
+          io.to(id).emit('session-declined', {
+            byUserName: toUser.full_name,
+            topic
+          });
+        });
+      }
+    }
+  });
+
+  // 4. In-App Classroom Video Room Join
   socket.on('join-room', ({ roomId, user }) => {
     socket.join(roomId);
     socket.roomId = roomId;
@@ -144,21 +373,17 @@ io.on('connection', (socket) => {
     }
     rooms.get(roomId).add(socket.id);
 
-    console.log(`👤 User ${user?.full_name || socket.id} joined room ${roomId}`);
-
-    // Notify other peers in this room that a new user joined (triggers WebRTC offer)
+    // Notify other peers in this room
     socket.to(roomId).emit('user-joined', {
       socketId: socket.id,
       user
     });
 
-    // Send list of existing users to the newly joined peer
-    const existingUsers = Array.from(rooms.get(roomId))
-      .filter(id => id !== socket.id);
+    const existingUsers = Array.from(rooms.get(roomId)).filter(id => id !== socket.id);
     socket.emit('existing-users', existingUsers);
   });
 
-  // 2. WebRTC P2P Video Signaling: Offer
+  // 5. WebRTC P2P Video Signaling (Offer, Answer, ICE Candidates)
   socket.on('webrtc-offer', ({ targetSocketId, offer }) => {
     socket.to(targetSocketId).emit('webrtc-offer', {
       senderSocketId: socket.id,
@@ -166,7 +391,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // 3. WebRTC P2P Video Signaling: Answer
   socket.on('webrtc-answer', ({ targetSocketId, answer }) => {
     socket.to(targetSocketId).emit('webrtc-answer', {
       senderSocketId: socket.id,
@@ -174,7 +398,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // 4. WebRTC P2P Video Signaling: ICE Candidate
   socket.on('webrtc-ice-candidate', ({ targetSocketId, candidate }) => {
     socket.to(targetSocketId).emit('webrtc-ice-candidate', {
       senderSocketId: socket.id,
@@ -182,34 +405,33 @@ io.on('connection', (socket) => {
     });
   });
 
-  // 5. Real-Time Shared Code Editor Synchronizer
+  // 6. Live Synchronizers: Code, Notes, Chat
   socket.on('code-change', ({ roomId, code }) => {
     socket.to(roomId).emit('code-update', code);
   });
 
-  // 6. Real-Time Shared Notes Synchronizer
   socket.on('notes-change', ({ roomId, notes }) => {
     socket.to(roomId).emit('notes-update', notes);
   });
 
-  // 7. Real-Time In-Session Chat
   socket.on('chat-message', ({ roomId, message }) => {
     io.in(roomId).emit('chat-message', message);
   });
 
-  // 8. Real-Time Session Status (End session, start quiz)
-  socket.on('session-event', ({ roomId, event, payload }) => {
-    io.in(roomId).emit('session-event', { event, payload });
-  });
-
-  // 9. Real-Time Global Token Settlement Notification
-  socket.on('token-transfer-broadcast', (data) => {
-    io.emit('token-balance-updated', data);
-  });
-
-  // Disconnect handler
+  // 7. Disconnect Handler
   socket.on('disconnect', () => {
-    console.log(`❌ Client disconnected: ${socket.id}`);
+    const user = onlineUsers.get(socket.id);
+    if (user && user.id) {
+      const sIds = userSockets.get(user.id);
+      if (sIds) {
+        sIds.delete(socket.id);
+        if (sIds.size === 0) userSockets.delete(user.id);
+      }
+      onlineUsers.delete(socket.id);
+      console.log(`⚪ User ${user.full_name} disconnected`);
+      broadcastOnlinePresence();
+    }
+
     if (socket.roomId && rooms.has(socket.roomId)) {
       rooms.get(socket.roomId).delete(socket.id);
       if (rooms.get(socket.roomId).size === 0) {

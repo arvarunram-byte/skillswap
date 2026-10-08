@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { api } from '../lib/api';
 import { db } from '../lib/supabase';
 import { getSocket } from '../lib/socket';
 import confetti from 'canvas-confetti';
@@ -11,6 +12,8 @@ export function AppProvider({ children }) {
     const saved = localStorage.getItem('skillswap_current_user');
     return saved ? JSON.parse(saved) : null;
   });
+  const [onlineUserIds, setOnlineUserIds] = useState([]);
+  const [incomingRequest, setIncomingRequest] = useState(null);
   const [activeSession, setActiveSession] = useState(null);
   const [isQuizOpen, setIsQuizOpen] = useState(false);
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
@@ -18,58 +21,72 @@ export function AppProvider({ children }) {
   const [activeTab, setActiveTab] = useState('matchmaker');
   const [notification, setNotification] = useState(null);
 
-  // Load latest real data
+  // Load profiles from the server
   const refreshData = useCallback(async () => {
-    const users = await db.getProfiles();
+    const users = await api.getProfiles();
     setProfiles(users);
     const txs = await db.getTransactions();
     setTransactions(txs);
   }, []);
 
-  // Sync current user with latest profile
+  // Socket and Presence lifecycle
   useEffect(() => {
     refreshData();
-
-    // Socket real-time broadcast listener
     const socket = getSocket();
+
+    // Register presence when currentUser exists
+    if (currentUser) {
+      socket.emit('register-presence', currentUser);
+    }
+
+    // 1. Presence Updates
+    socket.on('online-presence-update', ({ onlineUserIds }) => {
+      setOnlineUserIds(onlineUserIds || []);
+    });
+
+    // 2. Incoming Session Request Notification ("oruthanaga teach pannura mari iruntha avangaluku notification poganum")
+    socket.on('incoming-session-request', (reqData) => {
+      console.log('🔔 Received incoming session request:', reqData);
+      setIncomingRequest(reqData);
+    });
+
+    // 3. Request Status Listeners
+    socket.on('session-request-sent', ({ topic }) => {
+      showNotification(`🔔 Session request sent! Waiting for teacher to accept...`, 'info');
+    });
+
+    socket.on('session-request-error', ({ message }) => {
+      showNotification(message, 'warning');
+    });
+
+    socket.on('session-declined', ({ byUserName, topic }) => {
+      showNotification(`${byUserName} is currently unable to teach ${topic}.`, 'warning');
+    });
+
+    // 4. Session Start Broadcast (when teacher accepts)
+    socket.on('session-accepted-and-start', (sessionData) => {
+      console.log('🚀 Both users starting session:', sessionData);
+      setIncomingRequest(null);
+      setActiveSession(sessionData);
+      setActiveTab('classroom');
+      showNotification(`Session on ${sessionData.topic} started! Connecting WebRTC video...`, 'success');
+    });
+
+    // 5. Token Balance Broadcast
     socket.on('token-balance-updated', () => {
       refreshData();
     });
 
-    // Cross-tab real-time listener
-    const handleStorageChange = (e) => {
-      if (e.key === 'skillswap_profiles' || e.key === 'skillswap_tx') {
-        refreshData();
-      }
-      if (e.key === 'skillswap_current_user') {
-        setCurrentUser(e.newValue ? JSON.parse(e.newValue) : null);
-      }
-    };
-    window.addEventListener('storage', handleStorageChange);
-
-    // Supabase cloud realtime listener
-    const unsubscribeSupabase = db.subscribeToChanges(() => {
-      refreshData();
-    });
-
     return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      unsubscribeSupabase();
+      socket.off('online-presence-update');
+      socket.off('incoming-session-request');
+      socket.off('session-request-sent');
+      socket.off('session-request-error');
+      socket.off('session-declined');
+      socket.off('session-accepted-and-start');
+      socket.off('token-balance-updated');
     };
-  }, [refreshData]);
-
-  // Keep currentUser synced
-  useEffect(() => {
-    if (currentUser) {
-      const fresh = profiles.find(p => p.id === currentUser.id || p.email === currentUser.email);
-      if (fresh) {
-        if (fresh.wallet_balance !== currentUser.wallet_balance || fresh.skills_teach.length !== currentUser.skills_teach.length) {
-          setCurrentUser(fresh);
-          localStorage.setItem('skillswap_current_user', JSON.stringify(fresh));
-        }
-      }
-    }
-  }, [profiles, currentUser]);
+  }, [currentUser, refreshData]);
 
   const showNotification = (message, type = 'info') => {
     setNotification({ message, type });
@@ -80,21 +97,31 @@ export function AppProvider({ children }) {
 
   // Real User Registration
   const register = async (userData) => {
-    const newProfile = await db.registerUser(userData);
+    const newProfile = await api.register(userData);
     setCurrentUser(newProfile);
     localStorage.setItem('skillswap_current_user', JSON.stringify(newProfile));
+    
+    // Register presence immediately on socket
+    const socket = getSocket();
+    socket.emit('register-presence', newProfile);
+
     await refreshData();
-    showNotification(`🎉 Registration successful! 1 Free Welcome Token added to your wallet!`, 'success');
+    showNotification(`🎉 Registration successful! 1 Free Welcome Token added!`, 'success');
     return newProfile;
   };
 
   // Real User Login
   const login = async (email, password) => {
-    const res = await db.loginUser(email, password);
+    const res = await api.login(email, password);
     if (res.success) {
-      setCurrentUser(res.user);
-      localStorage.setItem('skillswap_current_user', JSON.stringify(res.user));
-      showNotification(`Welcome back, ${res.user.full_name}!`, 'success');
+      setCurrentUser(res.profile);
+      localStorage.setItem('skillswap_current_user', JSON.stringify(res.profile));
+
+      const socket = getSocket();
+      socket.emit('register-presence', res.profile);
+
+      await refreshData();
+      showNotification(`Welcome back, ${res.profile.full_name}!`, 'success');
       return true;
     } else {
       showNotification(res.message, 'danger');
@@ -102,48 +129,71 @@ export function AppProvider({ children }) {
     }
   };
 
-  // Real Logout
+  // Logout
   const logout = () => {
     setCurrentUser(null);
     setActiveSession(null);
+    setIncomingRequest(null);
     localStorage.removeItem('skillswap_current_user');
     showNotification('Logged out successfully.', 'info');
   };
 
-  // Start Real Peer Session
-  const startSession = (partner, topic, role = 'learner') => {
+  // Request a session with peer (triggers live notification on their screen!)
+  const requestSession = (peer, topic, role = 'learner') => {
     if (!currentUser) {
       showNotification('Please register or log in first.', 'warning');
       return false;
     }
 
-    const teacher = role === 'teacher' ? currentUser : partner;
-    const learner = role === 'learner' ? currentUser : partner;
-
-    if (learner.wallet_balance < 1) {
-      showNotification(`Insufficient Time-Credits! ${learner.full_name} needs at least 1 Time-Credit Token. Teach a peer to earn credits!`, 'danger');
+    if (currentUser.wallet_balance < 1 && role === 'learner') {
+      showNotification(`Insufficient Time-Credits! You need 1 Time-Credit Token to learn. Teach a peer first!`, 'danger');
       return false;
     }
 
-    const sortedIds = [teacher.id, learner.id].sort().join('_');
-    const roomId = `room_${sortedIds}_${encodeURIComponent(topic || 'lesson')}`;
+    const socket = getSocket();
+    socket.emit('request-session', {
+      fromUser: currentUser,
+      toUserId: peer.id,
+      topic: topic || peer.skills_teach[0],
+      role
+    });
 
-    const session = {
-      id: 'sess_' + Date.now(),
-      roomId,
-      teacher,
-      learner,
-      topic: topic || (role === 'learner' ? partner.skills_teach[0] : currentUser.skills_teach[0]),
-      startedAt: Date.now(),
-      codeContent: `# SkillSwap Real-Time Peer Code Space\n# Topic: ${topic}\n# Teacher: ${teacher.full_name} | Learner: ${learner.full_name}\n\ndef live_solution():\n    print("Real-time collaborative room connected!")\n\nlive_solution()`,
-      notesContent: `### Real-Time Session Notes: ${topic}\n- Key Concept 1\n- Real-world application\n- Hands-on exercise`,
-      messages: []
-    };
-
-    setActiveSession(session);
-    setActiveTab('classroom');
-    showNotification(`Live peer session launched for ${topic}! Connecting WebRTC video & collaborative editor...`, 'success');
+    showNotification(`Sent 1-on-1 session request to ${peer.full_name}...`, 'info');
     return true;
+  };
+
+  // Direct start fallback
+  const startSession = (partner, topic, role = 'learner') => {
+    return requestSession(partner, topic, role);
+  };
+
+  // Teacher Accepts Request
+  const acceptSessionRequest = () => {
+    if (!incomingRequest || !currentUser) return;
+    const socket = getSocket();
+    socket.emit('respond-session-request', {
+      requestId: incomingRequest.requestId,
+      accepted: true,
+      fromUser: incomingRequest.fromUser,
+      toUser: currentUser,
+      topic: incomingRequest.topic
+    });
+    setIncomingRequest(null);
+  };
+
+  // Teacher Declines Request
+  const declineSessionRequest = () => {
+    if (!incomingRequest || !currentUser) return;
+    const socket = getSocket();
+    socket.emit('respond-session-request', {
+      requestId: incomingRequest.requestId,
+      accepted: false,
+      fromUser: incomingRequest.fromUser,
+      toUser: currentUser,
+      topic: incomingRequest.topic
+    });
+    setIncomingRequest(null);
+    showNotification('Declined session request.', 'info');
   };
 
   const triggerEndSession = () => {
@@ -151,7 +201,7 @@ export function AppProvider({ children }) {
     setIsQuizOpen(true);
   };
 
-  // Complete Quiz & Settle Tokens in Real Time
+  // Settle Tokens upon passing Quiz
   const completeQuizAndSettleTokens = async (scorePercent) => {
     if (!activeSession) return { success: false };
 
@@ -164,24 +214,15 @@ export function AppProvider({ children }) {
         origin: { y: 0.6 }
       });
 
-      await db.transferToken({
-        fromUserId: activeSession.learner.id,
-        toUserId: activeSession.teacher.id,
-        sessionId: activeSession.id,
-        topic: activeSession.topic
-      });
-
-      const socket = getSocket();
-      socket.emit('token-transfer-broadcast', {
-        from: activeSession.learner.id,
-        to: activeSession.teacher.id,
-        topic: activeSession.topic,
-        amount: 1
-      });
+      await api.transferToken(
+        activeSession.learner.id,
+        activeSession.teacher.id,
+        activeSession.topic
+      );
 
       await refreshData();
 
-      showNotification(`🎉 Verification PASSED! 1 Time-Credit Token transferred from ${activeSession.learner.full_name} to ${activeSession.teacher.full_name} in real time!`, 'success');
+      showNotification(`🎉 Verification PASSED! 1 Time-Credit Token transferred from ${activeSession.learner.full_name} to ${activeSession.teacher.full_name}!`, 'success');
 
       setActiveSession(null);
       setIsQuizOpen(false);
@@ -195,15 +236,15 @@ export function AppProvider({ children }) {
     }
   };
 
-  // Real-Time Skill Matrix Update
+  // Update Skills
   const updateSkills = async (teachSkills, learnSkills) => {
     if (!currentUser) return;
+    await api.updateSkills(currentUser.id, teachSkills, learnSkills);
     const updated = {
       ...currentUser,
       skills_teach: teachSkills,
       skills_learn: learnSkills
     };
-    await db.updateProfile(updated);
     setCurrentUser(updated);
     localStorage.setItem('skillswap_current_user', JSON.stringify(updated));
     await refreshData();
@@ -216,12 +257,17 @@ export function AppProvider({ children }) {
         profiles,
         currentUser,
         setCurrentUser,
+        onlineUserIds,
+        incomingRequest,
+        acceptSessionRequest,
+        declineSessionRequest,
         register,
         login,
         logout,
         activeSession,
         setActiveSession,
         startSession,
+        requestSession,
         triggerEndSession,
         isQuizOpen,
         setIsQuizOpen,
