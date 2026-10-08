@@ -1,7 +1,7 @@
 services:
   - type: web
     name: skillswap
-    env: node
+    runtime: node
     plan: free
     region: singapore
     buildCommand: npm install && npm run build

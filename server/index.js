@@ -227,9 +227,14 @@ app.use(express.static(distPath));
 
 // For SPA client routing fallback (Express 5 compatible)
 app.use((req, res) => {
-  res.sendFile(path.join(distPath, 'index.html'));
+  const indexPath = path.join(distPath, 'index.html');
+  res.sendFile(indexPath, (err) => {
+    if (err) {
+      res.status(200).send('<h1>SkillSwap Real-Time Server Active</h1><p>Building client interface...</p>');
+    }
+  });
 });
 
-server.listen(PORT, () => {
-  console.log(`🚀 SkillSwap Fullstack Real-Time Server running on http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 SkillSwap Fullstack Real-Time Server running on port ${PORT}`);
 });
