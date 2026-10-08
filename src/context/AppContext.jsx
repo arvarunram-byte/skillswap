@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { db, getSupabaseConfig } from '../lib/supabase';
+import { getSocket } from '../lib/socket';
 import confetti from 'canvas-confetti';
 
 const AppContext = createContext();
@@ -12,33 +13,65 @@ export function AppProvider({ children }) {
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [transactions, setTransactions] = useState([]);
-  const [activeTab, setActiveTab] = useState('matchmaker'); // 'dashboard', 'matchmaker', 'classroom'
+  const [activeTab, setActiveTab] = useState('matchmaker');
   const [notification, setNotification] = useState(null);
 
-  // Load profiles on startup
-  useEffect(() => {
-    async function loadData() {
-      const users = await db.getProfiles();
-      setProfiles(users);
-      if (users.length > 0 && !currentUser) {
-        // Default to first user (Alex Chen)
-        setCurrentUser(users[0]);
-      }
-      const txs = await db.getTransactions();
-      setTransactions(txs);
-    }
-    loadData();
+  // Load latest data from DB
+  const refreshData = useCallback(async () => {
+    const users = await db.getProfiles();
+    setProfiles(users);
+    const txs = await db.getTransactions();
+    setTransactions(txs);
   }, []);
 
-  // Update current user when profiles change
+  // Initialize and attach real-time listeners
+  useEffect(() => {
+    refreshData().then(() => {
+      // Pick initial user
+      const storedUserId = localStorage.getItem('skillswap_active_user_id');
+      db.getProfiles().then(users => {
+        if (users && users.length > 0) {
+          const found = storedUserId ? users.find(u => u.id === storedUserId) : users[0];
+          setCurrentUser(found || users[0]);
+        }
+      });
+    });
+
+    // 1. Socket.io Real-Time Listener
+    const socket = getSocket();
+    socket.on('token-balance-updated', (data) => {
+      console.log('⚡ Real-time token settlement received via WebSocket:', data);
+      refreshData();
+    });
+
+    // 2. Cross-tab LocalStorage Real-Time Listener
+    const handleStorageChange = (e) => {
+      if (e.key === 'skillswap_profiles' || e.key === 'skillswap_tx') {
+        refreshData();
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+
+    // 3. Supabase Cloud Realtime Channel Listener
+    const unsubscribeSupabase = db.subscribeToChanges(() => {
+      refreshData();
+    });
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      unsubscribeSupabase();
+    };
+  }, [refreshData]);
+
+  // Sync currentUser with profiles state
   useEffect(() => {
     if (currentUser) {
       const fresh = profiles.find(p => p.id === currentUser.id);
-      if (fresh) {
+      if (fresh && (fresh.wallet_balance !== currentUser.wallet_balance || fresh.skills_teach.length !== currentUser.skills_teach.length)) {
         setCurrentUser(fresh);
       }
     }
-  }, [profiles]);
+  }, [profiles, currentUser]);
 
   const showNotification = (message, type = 'info') => {
     setNotification({ message, type });
@@ -47,12 +80,13 @@ export function AppProvider({ children }) {
     }, 4500);
   };
 
-  // Switch between demo student accounts for live hackathon demonstration
+  // Switch student profile
   const switchUser = (userId) => {
     const selected = profiles.find(p => p.id === userId);
     if (selected) {
       setCurrentUser(selected);
-      showNotification(`Switched active profile to ${selected.full_name} (${selected.wallet_balance} Time-Credits)`, 'info');
+      localStorage.setItem('skillswap_active_user_id', selected.id);
+      showNotification(`Switched profile to ${selected.full_name} (${selected.wallet_balance} Credits)`, 'info');
     }
   };
 
@@ -62,32 +96,29 @@ export function AppProvider({ children }) {
     const learner = role === 'learner' ? currentUser : partner;
 
     if (learner.wallet_balance < 1) {
-      showNotification(`Insufficient Time-Credits! ${learner.full_name} needs at least 1 Time-Credit Token to join a session. Teach a peer first to earn credits!`, 'danger');
+      showNotification(`Insufficient Time-Credits! ${learner.full_name} needs 1 Time-Credit Token to join. Teach a peer first!`, 'danger');
       return false;
     }
 
+    // Unique room ID based on both student IDs & topic for real-time WebRTC pairing
+    const sortedIds = [teacher.id, learner.id].sort().join('_');
+    const roomId = `room_${sortedIds}_${encodeURIComponent(topic || 'lesson')}`;
+
     const session = {
       id: 'sess_' + Date.now(),
+      roomId,
       teacher,
       learner,
       topic: topic || (role === 'learner' ? partner.skills_teach[0] : currentUser.skills_teach[0]),
       startedAt: Date.now(),
-      elapsedSeconds: 0,
-      codeContent: `# Peer Collaboration Room - ${topic}\n# Topic: ${topic}\n\ndef solution():\n    print("Welcome to SkillSwap Live Peer Session!")\n\nsolution()`,
-      notesContent: `### Lesson Outline for ${topic}\n- Key Concept 1\n- Real-world application\n- Hands-on exercise`,
-      messages: [
-        {
-          id: 'm1',
-          sender: teacher.full_name,
-          text: `Hi ${learner.full_name}! Excited for our 1-on-1 session on ${topic}. Let's dive in!`,
-          time: 'Just now'
-        }
-      ]
+      codeContent: `# SkillSwap Live Real-Time Code Space\n# Topic: ${topic}\n# Teacher: ${teacher.full_name} | Learner: ${learner.full_name}\n\ndef execute_peer_lesson():\n    print("Real-time collaborative room connected!")\n\nexecute_peer_lesson()`,
+      notesContent: `### Real-Time Session Notes: ${topic}\n- Key Concept 1\n- Real-world application\n- Hands-on exercise`,
+      messages: []
     };
 
     setActiveSession(session);
     setActiveTab('classroom');
-    showNotification(`Peer session started for ${topic}! Video & collaborative editor initialized.`, 'success');
+    showNotification(`Live peer session launched for ${topic}! Connecting WebRTC video & collaborative editor...`, 'success');
     return true;
   };
 
@@ -97,7 +128,7 @@ export function AppProvider({ children }) {
     setIsQuizOpen(true);
   };
 
-  // Complete Quiz & Settle Time-Credit Tokens
+  // Complete Quiz & Settle Time-Credit Tokens in Real Time
   const completeQuizAndSettleTokens = async (scorePercent) => {
     if (!activeSession) return { success: false };
 
@@ -106,8 +137,8 @@ export function AppProvider({ children }) {
     if (isPassed) {
       // Confetti explosion
       confetti({
-        particleCount: 120,
-        spread: 80,
+        particleCount: 150,
+        spread: 90,
         origin: { y: 0.6 }
       });
 
@@ -119,23 +150,26 @@ export function AppProvider({ children }) {
         topic: activeSession.topic
       });
 
-      // Refresh profiles & transactions
-      const updatedProfiles = await db.getProfiles();
-      setProfiles(updatedProfiles);
-      const updatedTxs = await db.getTransactions();
-      setTransactions(updatedTxs);
+      // Broadcast real-time token settlement across WebSockets
+      const socket = getSocket();
+      socket.emit('token-transfer-broadcast', {
+        from: activeSession.learner.id,
+        to: activeSession.teacher.id,
+        topic: activeSession.topic,
+        amount: 1
+      });
 
-      showNotification(`🎉 Verification PASSED! 1 Time-Credit Token transferred from ${activeSession.learner.full_name} to ${activeSession.teacher.full_name}!`, 'success');
+      await refreshData();
 
-      // Close session
+      showNotification(`🎉 Verification PASSED! 1 Time-Credit Token transferred from ${activeSession.learner.full_name} to ${activeSession.teacher.full_name} in real time!`, 'success');
+
       setActiveSession(null);
       setIsQuizOpen(false);
       setActiveTab('dashboard');
 
       return { success: true, passed: true };
     } else {
-      // Fail condition per PDF
-      showNotification(`Quiz score below 60%. Token placed ON-HOLD in escrow for revision.`, 'warning');
+      showNotification(`Quiz score below 60%. Token placed ON-HOLD in escrow for review.`, 'warning');
       setIsQuizOpen(false);
       return { success: true, passed: false };
     }
@@ -150,9 +184,8 @@ export function AppProvider({ children }) {
       skills_learn: learnSkills
     };
     await db.updateProfile(updated);
-    const refreshed = await db.getProfiles();
-    setProfiles(refreshed);
-    showNotification('Skills Matrix successfully updated!', 'success');
+    await refreshData();
+    showNotification('Skills Matrix updated in real time!', 'success');
   };
 
   return (
@@ -178,7 +211,8 @@ export function AppProvider({ children }) {
         completeQuizAndSettleTokens,
         updateSkills,
         notification,
-        showNotification
+        showNotification,
+        refreshData
       }}
     >
       {children}

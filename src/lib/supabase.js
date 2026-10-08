@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Default demo seeds for offline/local immediate testing
+// Default initial student profiles for testing
 const INITIAL_DEMO_USERS = [
   {
     id: 'usr_alex',
@@ -60,7 +60,7 @@ const INITIAL_DEMO_USERS = [
   }
 ];
 
-// Read Supabase credentials from local storage or Vite env
+// Read Supabase credentials
 export const getSupabaseConfig = () => {
   const url = localStorage.getItem('skillswap_supabase_url') || import.meta.env.VITE_SUPABASE_URL || '';
   const key = localStorage.getItem('skillswap_supabase_anon_key') || import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -73,6 +73,7 @@ export const saveSupabaseConfig = (url, key) => {
   
   if (key) localStorage.setItem('skillswap_supabase_anon_key', key);
   else localStorage.removeItem('skillswap_supabase_anon_key');
+  supabaseInstance = null; // reset client
 };
 
 let supabaseInstance = null;
@@ -81,23 +82,36 @@ export const getSupabaseClient = () => {
   const { url, key, isConfigured } = getSupabaseConfig();
   if (isConfigured) {
     if (!supabaseInstance) {
-      supabaseInstance = createClient(url, key);
+      supabaseInstance = createClient(url, key, {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true
+        },
+        realtime: {
+          params: {
+            eventsPerSecond: 10
+          }
+        }
+      });
     }
     return supabaseInstance;
   }
   return null;
 };
 
-// Data Store Layer (Supports both Supabase & Local persistent fallback)
+// Real-Time Data Store Layer
 export const db = {
   // Get all registered peer student profiles
   async getProfiles() {
     const client = getSupabaseClient();
     if (client) {
-      const { data, error } = await client.from('profiles').select('*');
-      if (!error && data && data.length > 0) return data;
+      try {
+        const { data, error } = await client.from('profiles').select('*').order('rating', { ascending: false });
+        if (!error && data && data.length > 0) return data;
+      } catch (e) {
+        console.warn('Supabase fetch failed, using local store:', e);
+      }
     }
-    // Fallback to local storage
     const stored = localStorage.getItem('skillswap_profiles');
     if (stored) {
       return JSON.parse(stored);
@@ -110,7 +124,11 @@ export const db = {
   async updateProfile(profile) {
     const client = getSupabaseClient();
     if (client) {
-      await client.from('profiles').upsert(profile);
+      try {
+        await client.from('profiles').upsert(profile);
+      } catch (e) {
+        console.warn('Supabase upsert warning:', e);
+      }
     }
     const profiles = await this.getProfiles();
     const idx = profiles.findIndex(p => p.id === profile.id);
@@ -125,18 +143,18 @@ export const db = {
     return profile;
   },
 
-  // Transfer Time Credit token upon AI quiz verification
+  // Real-Time Transfer Time-Credit token upon AI quiz verification
   async transferToken({ fromUserId, toUserId, sessionId, topic }) {
     const profiles = await this.getProfiles();
     const learner = profiles.find(p => p.id === fromUserId);
     const teacher = profiles.find(p => p.id === toUserId);
 
     if (learner && learner.wallet_balance >= 1) {
-      learner.wallet_balance -= 1;
+      learner.wallet_balance = Number((learner.wallet_balance - 1).toFixed(2));
       learner.sessions_completed = (learner.sessions_completed || 0) + 1;
     }
     if (teacher) {
-      teacher.wallet_balance = (teacher.wallet_balance || 0) + 1;
+      teacher.wallet_balance = Number(((teacher.wallet_balance || 0) + 1).toFixed(2));
       teacher.sessions_completed = (teacher.sessions_completed || 0) + 1;
     }
 
@@ -161,7 +179,7 @@ export const db = {
     existingTx.unshift(tx);
     localStorage.setItem('skillswap_tx', JSON.stringify(existingTx));
 
-    // If Supabase is connected
+    // Real-Time Sync to Supabase Cloud if configured
     const client = getSupabaseClient();
     if (client) {
       try {
@@ -173,10 +191,10 @@ export const db = {
           amount: 1,
           type: 'PEER_SESSION_TRANSFER',
           status: 'COMPLETED',
-          note: `Transferred 1 Time-Credit for ${topic}`
+          note: `Real-time AI verified credit transfer for ${topic}`
         }]);
       } catch (e) {
-        console.warn('Supabase sync warning:', e);
+        console.warn('Supabase real-time update warning:', e);
       }
     }
 
@@ -185,8 +203,40 @@ export const db = {
 
   // Get transaction ledger
   async getTransactions(userId) {
+    const client = getSupabaseClient();
+    if (client) {
+      try {
+        const { data, error } = await client.from('transactions').select('*').order('created_at', { ascending: false });
+        if (!error && data && data.length > 0) return data;
+      } catch (e) {
+        console.warn('Supabase transactions fetch note:', e);
+      }
+    }
     const txs = JSON.parse(localStorage.getItem('skillswap_tx') || '[]');
     if (!userId) return txs;
     return txs.filter(t => t.from_user_id === userId || t.to_user_id === userId);
+  },
+
+  // Subscribe to real-time database changes
+  subscribeToChanges(onUpdate) {
+    const client = getSupabaseClient();
+    if (client) {
+      const channel = client
+        .channel('skillswap-realtime')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, (payload) => {
+          console.log('⚡ Real-time profile change from Supabase:', payload);
+          onUpdate(payload);
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, (payload) => {
+          console.log('⚡ Real-time transaction recorded in Supabase:', payload);
+          onUpdate(payload);
+        })
+        .subscribe();
+
+      return () => {
+        client.removeChannel(channel);
+      };
+    }
+    return () => {};
   }
 };
