@@ -157,6 +157,9 @@ app.post('/api/transfer-token', (req, res) => {
 
   saveProfiles(profiles);
 
+  if (fromUserId) activeSessions.delete(fromUserId);
+  if (toUserId) activeSessions.delete(toUserId);
+
   // Broadcast token update to all connected sockets in real time
   io.emit('token-balance-updated', {
     fromUserId,
@@ -168,7 +171,34 @@ app.post('/api/transfer-token', (req, res) => {
   res.json({ success: true, learner, teacher });
 });
 
-// 7. Dynamic Gemini AI Quiz Generation
+// 7. Get Active Session for User
+app.get('/api/active-session/:userId', (req, res) => {
+  const session = activeSessions.get(req.params.userId) || null;
+  res.json({ session });
+});
+
+// 8. End Active Session
+app.post('/api/end-session', (req, res) => {
+  const { roomId, userId } = req.body;
+  if (roomId) {
+    const sess = roomSessions.get(roomId);
+    if (sess) {
+      if (sess.teacher?.id) activeSessions.delete(sess.teacher.id);
+      if (sess.learner?.id) activeSessions.delete(sess.learner.id);
+      roomSessions.delete(roomId);
+    }
+  } else if (userId) {
+    const sess = activeSessions.get(userId);
+    if (sess) {
+      if (sess.teacher?.id) activeSessions.delete(sess.teacher.id);
+      if (sess.learner?.id) activeSessions.delete(sess.learner.id);
+      if (sess.roomId) roomSessions.delete(sess.roomId);
+    }
+  }
+  res.json({ success: true });
+});
+
+// 9. Dynamic Gemini AI Quiz Generation
 app.post('/api/generate-quiz', async (req, res) => {
   const { topic, apiKey: clientApiKey } = req.body;
   const apiKey = clientApiKey || process.env.GEMINI_API_KEY;
@@ -262,6 +292,23 @@ const onlineUsers = new Map();
 const userSockets = new Map();
 // Map: roomId -> Set of socketIds
 const rooms = new Map();
+// Map: userId -> activeSession object
+const activeSessions = new Map();
+// Map: roomId -> activeSession object
+const roomSessions = new Map();
+// Map: roomId -> { messages: [], code: '', notes: '' }
+const roomData = new Map();
+
+function getRoomData(roomId) {
+  if (!roomData.has(roomId)) {
+    roomData.set(roomId, {
+      messages: [],
+      code: '',
+      notes: ''
+    });
+  }
+  return roomData.get(roomId);
+}
 
 function broadcastOnlinePresence() {
   const onlineUserIds = Array.from(new Set(Array.from(onlineUsers.values()).map(u => u.id)));
@@ -290,7 +337,7 @@ io.on('connection', (socket) => {
 
   // 2. Real-Time Session Request & Notification ("oruthanaga teach pannura mari iruntha avangaluku notification poganum")
   socket.on('request-session', ({ fromUser, toUserId, topic, role }) => {
-    console.log(`🔔 Session request: ${fromUser.full_name} -> User ID ${toUserId} for ${topic}`);
+    console.log(`🔔 Session request: ${fromUser?.full_name} -> User ID ${toUserId} for ${topic}`);
     const targetSocketIds = userSockets.get(toUserId);
 
     const requestId = 'req_' + Date.now();
@@ -320,21 +367,26 @@ io.on('connection', (socket) => {
   socket.on('respond-session-request', ({ requestId, accepted, fromUser, toUser, topic }) => {
     console.log(`Session response for ${requestId}: accepted=${accepted}`);
     
-    // Create shared room ID for WebRTC
+    // Create shared room ID for WebRTC deterministically
     const sortedIds = [fromUser.id, toUser.id].sort().join('_');
-    const roomId = `room_${sortedIds}_${encodeURIComponent(topic || 'lesson')}`;
+    const roomId = `room_${sortedIds}`;
 
     const callerSocketIds = userSockets.get(fromUser.id);
     const calleeSocketIds = userSockets.get(toUser.id);
 
     if (accepted) {
       const sessionData = {
+        id: roomId,
         roomId,
         teacher: toUser, // The one who accepted to teach
         learner: fromUser,
-        topic,
+        topic: topic || 'Peer Session',
         startedAt: Date.now()
       };
+
+      activeSessions.set(fromUser.id, sessionData);
+      activeSessions.set(toUser.id, sessionData);
+      roomSessions.set(roomId, sessionData);
 
       // Notify caller that teacher accepted!
       if (callerSocketIds) {
@@ -362,8 +414,35 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 3b. Direct Session Launch (Instantly starts session without popup delay)
+  socket.on('start-direct-session', ({ fromUser, toUser, topic }) => {
+    console.log(`⚡ Direct session initiated: ${fromUser?.full_name} <-> ${toUser?.full_name}`);
+    const sortedIds = [fromUser.id, toUser.id].sort().join('_');
+    const roomId = `room_${sortedIds}`;
+
+    const sessionData = {
+      id: roomId,
+      roomId,
+      teacher: toUser,
+      learner: fromUser,
+      topic: topic || 'Peer Learning Exchange',
+      startedAt: Date.now()
+    };
+
+    activeSessions.set(fromUser.id, sessionData);
+    activeSessions.set(toUser.id, sessionData);
+    roomSessions.set(roomId, sessionData);
+
+    const callerSockets = userSockets.get(fromUser.id);
+    const calleeSockets = userSockets.get(toUser.id);
+
+    if (callerSockets) callerSockets.forEach(id => io.to(id).emit('session-accepted-and-start', sessionData));
+    if (calleeSockets) calleeSockets.forEach(id => io.to(id).emit('session-accepted-and-start', sessionData));
+  });
+
   // 4. In-App Classroom Video Room Join
   socket.on('join-room', ({ roomId, user }) => {
+    if (!roomId) return;
     socket.join(roomId);
     socket.roomId = roomId;
     socket.userData = user;
@@ -371,35 +450,55 @@ io.on('connection', (socket) => {
     if (!rooms.has(roomId)) {
       rooms.set(roomId, new Set());
     }
-    rooms.get(roomId).add(socket.id);
+    const roomSet = rooms.get(roomId);
+    const otherSocketIds = Array.from(roomSet).filter(id => id !== socket.id);
+    roomSet.add(socket.id);
 
-    // Notify other peers in this room
-    socket.to(roomId).emit('user-joined', {
-      socketId: socket.id,
-      user
-    });
+    console.log(`👤 User ${user?.full_name || 'Student'} (${socket.id}) joined room: ${roomId}. Sockets in room: ${roomSet.size}`);
 
-    const existingUsers = Array.from(rooms.get(roomId)).filter(id => id !== socket.id);
-    socket.emit('existing-users', existingUsers);
+    // Provide persisted room history (messages, code, notes)
+    const rd = getRoomData(roomId);
+    socket.emit('room-history', rd);
+
+    // If an existing peer is already in this room, trigger clean WebRTC negotiation
+    if (otherSocketIds.length > 0) {
+      const existingPeerSocketId = otherSocketIds[0];
+      console.log(`🤝 Room pair established in ${roomId}: New Joiner (${socket.id}) will call Existing Peer (${existingPeerSocketId})`);
+
+      // 1. Tell existing peer that another peer joined
+      io.to(existingPeerSocketId).emit('peer-joined', {
+        socketId: socket.id,
+        user,
+        isCaller: false
+      });
+
+      // 2. Tell new joiner to initiate WebRTC call (caller)
+      socket.emit('ready-to-call', {
+        targetSocketId: existingPeerSocketId,
+        isCaller: true
+      });
+    }
   });
 
   // 5. WebRTC P2P Video Signaling (Offer, Answer, ICE Candidates)
   socket.on('webrtc-offer', ({ targetSocketId, offer }) => {
-    socket.to(targetSocketId).emit('webrtc-offer', {
+    console.log(`📡 Relaying WebRTC Offer: ${socket.id} -> ${targetSocketId}`);
+    io.to(targetSocketId).emit('webrtc-offer', {
       senderSocketId: socket.id,
       offer
     });
   });
 
   socket.on('webrtc-answer', ({ targetSocketId, answer }) => {
-    socket.to(targetSocketId).emit('webrtc-answer', {
+    console.log(`📡 Relaying WebRTC Answer: ${socket.id} -> ${targetSocketId}`);
+    io.to(targetSocketId).emit('webrtc-answer', {
       senderSocketId: socket.id,
       answer
     });
   });
 
   socket.on('webrtc-ice-candidate', ({ targetSocketId, candidate }) => {
-    socket.to(targetSocketId).emit('webrtc-ice-candidate', {
+    io.to(targetSocketId).emit('webrtc-ice-candidate', {
       senderSocketId: socket.id,
       candidate
     });
@@ -407,14 +506,24 @@ io.on('connection', (socket) => {
 
   // 6. Live Synchronizers: Code, Notes, Chat
   socket.on('code-change', ({ roomId, code }) => {
+    if (!roomId) return;
+    const rd = getRoomData(roomId);
+    rd.code = code;
     socket.to(roomId).emit('code-update', code);
   });
 
   socket.on('notes-change', ({ roomId, notes }) => {
+    if (!roomId) return;
+    const rd = getRoomData(roomId);
+    rd.notes = notes;
     socket.to(roomId).emit('notes-update', notes);
   });
 
   socket.on('chat-message', ({ roomId, message }) => {
+    if (!roomId || !message) return;
+    console.log(`💬 Chat in ${roomId} [${message.sender}]: ${message.text}`);
+    const rd = getRoomData(roomId);
+    rd.messages.push(message);
     io.in(roomId).emit('chat-message', message);
   });
 

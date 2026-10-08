@@ -10,8 +10,9 @@ export function getSocket() {
       : window.location.origin;
 
     socketInstance = io(serverUrl, {
-      transports: ['websocket', 'polling'],
-      reconnectionAttempts: 5,
+      transports: ['polling', 'websocket'],
+      upgrade: true,
+      reconnectionAttempts: 20,
       reconnectionDelay: 1000,
     });
 

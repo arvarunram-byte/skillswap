@@ -1,5 +1,65 @@
 [
   {
+    "id": "usr_1791450566387",
+    "email": "sentha@siet.ac.in",
+    "username": "sentha",
+    "full_name": "sentha",
+    "avatar_url": "https://api.dicebear.com/7.x/initials/svg?seed=sentha&backgroundColor=6366f1,8b5cf6,ec4899",
+    "bio": "Student at sri shakthi college. Passionate about peer learning!",
+    "institution": "sri shakthi college",
+    "wallet_balance": 1,
+    "skills_teach": [
+      "java"
+    ],
+    "skills_learn": [
+      "python"
+    ],
+    "rating": 5,
+    "sessions_completed": 0,
+    "password": "456123",
+    "created_at": "2026-10-08T09:09:26.387Z"
+  },
+  {
+    "id": "usr_1791450399832",
+    "email": "ertyui@setnm",
+    "username": "ertyui",
+    "full_name": "bdrtyuiop[hwertyuio",
+    "avatar_url": "https://api.dicebear.com/7.x/initials/svg?seed=bdrtyuiop%5Bhwertyuio&backgroundColor=6366f1,8b5cf6,ec4899",
+    "bio": "Student at gui. Passionate about peer learning!",
+    "institution": "gui",
+    "wallet_balance": 1,
+    "skills_teach": [
+      "vgu"
+    ],
+    "skills_learn": [
+      "gf"
+    ],
+    "rating": 5,
+    "sessions_completed": 0,
+    "password": "56",
+    "created_at": "2026-10-08T09:06:39.832Z"
+  },
+  {
+    "id": "usr_1791450142972",
+    "email": "varun@siet.ac.in",
+    "username": "varun",
+    "full_name": "varun",
+    "avatar_url": "https://api.dicebear.com/7.x/initials/svg?seed=varun&backgroundColor=6366f1,8b5cf6,ec4899",
+    "bio": "Student at siet. Passionate about peer learning!",
+    "institution": "siet",
+    "wallet_balance": 1,
+    "skills_teach": [
+      "python"
+    ],
+    "skills_learn": [
+      "java"
+    ],
+    "rating": 5,
+    "sessions_completed": 0,
+    "password": "123456",
+    "created_at": "2026-10-08T09:02:22.972Z"
+  },
+  {
     "id": "usr_alex",
     "email": "alex@skillswap.edu",
     "username": "alex_dev",
@@ -8,8 +68,16 @@
     "bio": "CS Major. Passionate about Python, backend microservices, and algorithms.",
     "institution": "Stanford University",
     "wallet_balance": 3,
-    "skills_teach": ["Python", "Data Structures", "FastAPI"],
-    "skills_learn": ["UI/UX Design", "Figma", "Design Systems"],
+    "skills_teach": [
+      "Python",
+      "Data Structures",
+      "FastAPI"
+    ],
+    "skills_learn": [
+      "UI/UX Design",
+      "Figma",
+      "Design Systems"
+    ],
     "rating": 4.9,
     "sessions_completed": 7,
     "created_at": "2026-10-01T10:00:00.000Z"
@@ -23,8 +91,15 @@
     "bio": "UX Designer & Researcher. I teach Figma wireframing and design systems.",
     "institution": "MIT Institute of Design",
     "wallet_balance": 2,
-    "skills_teach": ["UI/UX Design", "Figma", "User Research"],
-    "skills_learn": ["Python", "Data Analytics"],
+    "skills_teach": [
+      "UI/UX Design",
+      "Figma",
+      "User Research"
+    ],
+    "skills_learn": [
+      "Python",
+      "Data Analytics"
+    ],
     "rating": 5,
     "sessions_completed": 5,
     "created_at": "2026-10-02T11:00:00.000Z"
@@ -38,8 +113,15 @@
     "bio": "Frontend developer focused on React and WebRTC. Looking to learn public speaking.",
     "institution": "UC Berkeley",
     "wallet_balance": 1,
-    "skills_teach": ["React.js", "Web Development", "JavaScript"],
-    "skills_learn": ["Public Speaking", "Interview Skills"],
+    "skills_teach": [
+      "React.js",
+      "Web Development",
+      "JavaScript"
+    ],
+    "skills_learn": [
+      "Public Speaking",
+      "Interview Skills"
+    ],
     "rating": 4.8,
     "sessions_completed": 3,
     "created_at": "2026-10-03T12:00:00.000Z"
@@ -53,8 +135,15 @@
     "bio": "Debate champion & speech coach. Want to learn machine learning fundamentals.",
     "institution": "Oxford University",
     "wallet_balance": 4,
-    "skills_teach": ["Public Speaking", "Presentation Skills", "Communication"],
-    "skills_learn": ["Machine Learning", "Python"],
+    "skills_teach": [
+      "Public Speaking",
+      "Presentation Skills",
+      "Communication"
+    ],
+    "skills_learn": [
+      "Machine Learning",
+      "Python"
+    ],
     "rating": 4.95,
     "sessions_completed": 10,
     "created_at": "2026-10-04T13:00:00.000Z"

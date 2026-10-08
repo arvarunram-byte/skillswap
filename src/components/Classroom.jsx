@@ -29,7 +29,15 @@ const RTC_CONFIG = {
 };
 
 export default function Classroom() {
-  const { activeSession, currentUser, triggerEndSession, setActiveTab } = useApp();
+  const { 
+    activeSession, 
+    currentUser, 
+    triggerEndSession, 
+    setActiveTab, 
+    profiles, 
+    onlineUserIds, 
+    startDirectSession 
+  } = useApp();
 
   const [isVideoOn, setIsVideoOn] = useState(true);
   const [isMicOn, setIsMicOn] = useState(true);
@@ -53,26 +61,29 @@ export default function Classroom() {
   const peerConnectionRef = useRef(null);
   const partnerSocketIdRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const iceCandidatesQueue = useRef([]);
 
   const socket = getSocket();
-  const roomId = activeSession?.roomId || `room_${activeSession?.id}`;
+  const roomId = activeSession?.roomId || (activeSession?.id ? `room_${activeSession.id}` : null);
 
   // 1. Session Timer (Live timestamp-based)
   useEffect(() => {
     if (!activeSession) return;
     const interval = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - activeSession.startedAt) / 1000);
+      const elapsed = Math.floor((Date.now() - (activeSession.startedAt || Date.now())) / 1000);
       setElapsedSeconds(elapsed);
     }, 1000);
     return () => clearInterval(interval);
   }, [activeSession]);
 
-  // 2. Initialize Real Camera & Mic Stream
+  // 2. Initialize Real Camera & Mic Stream (with animated stream fallback if camera is locked by 1st tab)
   const initLocalStream = useCallback(async () => {
+    if (localStreamRef.current) return localStreamRef.current;
+
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
+          video: { width: { ideal: 640 }, height: { ideal: 480 } },
           audio: true
         });
         localStreamRef.current = stream;
@@ -82,53 +93,122 @@ export default function Classroom() {
         return stream;
       }
     } catch (err) {
-      console.warn('Webcam/Mic not accessible, continuing with canvas/audio stream:', err);
-      // Create empty mock stream canvas if camera blocked
-      const canvas = document.createElement('canvas');
-      canvas.width = 640;
-      canvas.height = 480;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#1e1b4b';
-      ctx.fillRect(0, 0, 640, 480);
-      ctx.fillStyle = '#a5b4fc';
-      ctx.font = '24px sans-serif';
-      ctx.fillText(currentUser?.full_name || 'Student Video', 160, 240);
-      const stream = canvas.captureStream(30);
-      localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
-      return stream;
+      console.warn('Webcam/Mic not accessible (e.g. 2nd tab camera lock on Windows), launching live animated fallback stream:', err);
     }
-  }, [currentUser]);
 
-  // 3. Create WebRTC Peer Connection
+    // Dynamic animated canvas stream with audio track
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 480;
+    const ctx = canvas.getContext('2d');
+    let frame = 0;
+
+    const draw = () => {
+      frame++;
+      const grad = ctx.createLinearGradient(0, 0, 640, 480);
+      grad.addColorStop(0, '#090d16');
+      grad.addColorStop(1, '#1e1b4b');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 640, 480);
+
+      const pulse = Math.sin(frame * 0.1) * 8;
+      ctx.beginPath();
+      ctx.arc(320, 200, 65 + pulse, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(99, 102, 241, 0.25)';
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(320, 200, 52, 0, Math.PI * 2);
+      ctx.fillStyle = '#6366f1';
+      ctx.fill();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 36px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const initials = (currentUser?.full_name || 'ME').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
+      ctx.fillText(initials, 320, 200);
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = 'bold 18px sans-serif';
+      ctx.fillText(currentUser?.full_name || 'Student Video', 320, 290);
+
+      ctx.fillStyle = '#34d399';
+      ctx.font = '13px sans-serif';
+      ctx.fillText('● Live WebRTC Peer Stream', 320, 320);
+    };
+
+    draw();
+    const animInterval = setInterval(draw, 100);
+
+    const stream = canvas.captureStream(15);
+    stream._animInterval = animInterval;
+
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) {
+        const audioCtx = new AudioCtx();
+        const dest = audioCtx.createMediaStreamDestination();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        gain.gain.value = 0.00001;
+        osc.connect(gain);
+        gain.connect(dest);
+        osc.start();
+        dest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+      }
+    } catch (e) {
+      console.warn('AudioContext fallback notice:', e);
+    }
+
+    localStreamRef.current = stream;
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = stream;
+    }
+    return stream;
+  }, [currentUser?.full_name]);
+
+  // 3. Create Peer Connection helper
   const createPeerConnection = useCallback((targetSocketId) => {
     if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
+      try {
+        peerConnectionRef.current.close();
+      } catch (e) {
+        console.warn('Closing old pc:', e);
+      }
     }
 
     const pc = new RTCPeerConnection(RTC_CONFIG);
     peerConnectionRef.current = pc;
     partnerSocketIdRef.current = targetSocketId;
 
-    // Add local tracks
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => {
-        pc.addTrack(track, localStreamRef.current);
+        try {
+          pc.addTrack(track, localStreamRef.current);
+        } catch (err) {
+          console.warn('Error adding track to PC:', err);
+        }
       });
     }
 
-    // Handle remote tracks
     pc.ontrack = (event) => {
-      console.log('🎥 Received real-time WebRTC remote track:', event.track.kind);
-      if (remoteVideoRef.current && event.streams[0]) {
-        remoteVideoRef.current.srcObject = event.streams[0];
+      console.log('🎥 Received WebRTC remote track:', event.track.kind);
+      if (remoteVideoRef.current) {
+        if (event.streams && event.streams[0]) {
+          remoteVideoRef.current.srcObject = event.streams[0];
+        } else {
+          let s = remoteVideoRef.current.srcObject;
+          if (!s) {
+            s = new MediaStream();
+            remoteVideoRef.current.srcObject = s;
+          }
+          s.addTrack(event.track);
+        }
         setPeerConnected(true);
       }
     };
 
-    // Handle ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate && targetSocketId) {
         socket.emit('webrtc-ice-candidate', {
@@ -139,7 +219,7 @@ export default function Classroom() {
     };
 
     pc.onconnectionstatechange = () => {
-      console.log('WebRTC Connection state:', pc.connectionState);
+      console.log('WebRTC connectionState:', pc.connectionState);
       if (pc.connectionState === 'connected') {
         setPeerConnected(true);
       } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
@@ -150,132 +230,197 @@ export default function Classroom() {
     return pc;
   }, [socket]);
 
+  // Drain queued ICE candidates helper
+  const drainIceCandidates = useCallback(async (pc) => {
+    while (iceCandidatesQueue.current.length > 0) {
+      const candidate = iceCandidatesQueue.current.shift();
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.warn('Error draining candidate:', err);
+      }
+    }
+  }, []);
+
   // 4. Socket.io WebRTC Signaling and Real-Time Event Handlers
   useEffect(() => {
-    if (!activeSession) return;
+    if (!activeSession || !roomId) return;
 
     let isMounted = true;
 
-    // Join room over WebSockets
+    // Join room when stream is ready
     initLocalStream().then(() => {
       if (!isMounted) return;
-
+      console.log('🚀 Joining classroom socket room:', roomId);
       socket.emit('join-room', {
         roomId,
         user: currentUser
       });
     });
 
-    // Handle when existing users are detected
-    socket.on('existing-users', async (existingUsers) => {
-      if (existingUsers && existingUsers.length > 0) {
-        const targetSocketId = existingUsers[0];
-        const pc = createPeerConnection(targetSocketId);
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socket.emit('webrtc-offer', { targetSocketId, offer });
-        } catch (err) {
-          console.error('Failed to create WebRTC offer:', err);
-        }
+    // Re-join on socket reconnect
+    const onConnect = () => {
+      if (isMounted) {
+        console.log('🔄 Socket reconnected, re-joining room:', roomId);
+        socket.emit('join-room', { roomId, user: currentUser });
       }
-    });
+    };
+    socket.on('connect', onConnect);
 
-    // When another peer joins, prepare for their offer or create offer
-    socket.on('user-joined', async ({ socketId, user }) => {
-      console.log('Peer joined room in real-time:', user?.full_name);
-      setPeerConnected(true);
-      const pc = createPeerConnection(socketId);
+    // 1. We just joined and server tells us to initiate call to existing peer (Caller side)
+    const onReadyToCall = async ({ targetSocketId }) => {
+      console.log('📞 ready-to-call received from server:', targetSocketId);
+      if (!isMounted) return;
+      partnerSocketIdRef.current = targetSocketId;
+
+      const pc = createPeerConnection(targetSocketId);
       try {
-        const offer = await pc.createOffer();
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true
+        });
         await pc.setLocalDescription(offer);
-        socket.emit('webrtc-offer', { targetSocketId: socketId, offer });
+        socket.emit('webrtc-offer', { targetSocketId, offer });
       } catch (err) {
-        console.error('Error creating offer:', err);
+        console.error('Failed to create/send offer:', err);
       }
-    });
+    };
+    socket.on('ready-to-call', onReadyToCall);
 
-    // Received WebRTC Offer
-    socket.on('webrtc-offer', async ({ senderSocketId, offer }) => {
+    // 2. Existing peer notified that another peer joined (Callee side)
+    const onPeerJoined = ({ socketId, user }) => {
+      console.log('👤 Peer joined our room:', user?.full_name, socketId);
+      if (!isMounted) return;
+      partnerSocketIdRef.current = socketId;
+      setPeerConnected(true);
+      // We are CALLEE, we do not send offer! We wait for their offer.
+    };
+    socket.on('peer-joined', onPeerJoined);
+
+    // 3. Receive WebRTC Offer (Callee side)
+    const onWebRTCOffer = async ({ senderSocketId, offer }) => {
+      console.log('📥 Received WebRTC Offer from:', senderSocketId);
+      if (!isMounted) return;
+      partnerSocketIdRef.current = senderSocketId;
+
       const pc = createPeerConnection(senderSocketId);
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        await drainIceCandidates(pc);
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socket.emit('webrtc-answer', { targetSocketId: senderSocketId, answer });
       } catch (err) {
-        console.error('Error handling WebRTC offer:', err);
+        console.error('Failed to answer offer:', err);
       }
-    });
+    };
+    socket.on('webrtc-offer', onWebRTCOffer);
 
-    // Received WebRTC Answer
-    socket.on('webrtc-answer', async ({ senderSocketId, answer }) => {
-      if (peerConnectionRef.current) {
+    // 4. Receive WebRTC Answer (Caller side)
+    const onWebRTCAnswer = async ({ senderSocketId, answer }) => {
+      console.log('📥 Received WebRTC Answer from:', senderSocketId);
+      if (!isMounted || !peerConnectionRef.current) return;
+
+      try {
+        await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
+        await drainIceCandidates(peerConnectionRef.current);
+      } catch (err) {
+        console.error('Failed to set remote answer:', err);
+      }
+    };
+    socket.on('webrtc-answer', onWebRTCAnswer);
+
+    // 5. Receive WebRTC ICE Candidate
+    const onWebRTCIceCandidate = async ({ senderSocketId, candidate }) => {
+      if (!candidate || !isMounted) return;
+
+      const pc = peerConnectionRef.current;
+      if (pc && pc.remoteDescription && pc.remoteDescription.type) {
         try {
-          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (err) {
-          console.error('Error setting remote description:', err);
+          console.warn('Error adding ICE candidate:', err);
         }
+      } else {
+        iceCandidatesQueue.current.push(candidate);
       }
-    });
+    };
+    socket.on('webrtc-ice-candidate', onWebRTCIceCandidate);
 
-    // Received ICE Candidate
-    socket.on('webrtc-ice-candidate', async ({ senderSocketId, candidate }) => {
-      if (peerConnectionRef.current) {
-        try {
-          await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (err) {
-          console.error('Error adding ICE candidate:', err);
-        }
+    // 6. Room History (Chat, Code, Notes)
+    const onRoomHistory = (history) => {
+      if (!history || !isMounted) return;
+      if (Array.isArray(history.messages) && history.messages.length > 0) {
+        setChatMessages(history.messages);
       }
-    });
+      if (history.code) setCode(history.code);
+      if (history.notes) setNotes(history.notes);
+    };
+    socket.on('room-history', onRoomHistory);
 
-    // Real-Time Code Sync from Peer
-    socket.on('code-update', (updatedCode) => {
+    // 7. Live Synchronizers: Code, Notes, Chat
+    const onCodeUpdate = (updatedCode) => {
+      if (!isMounted) return;
       setCode(updatedCode);
       setPeerTyping(true);
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       typingTimeoutRef.current = setTimeout(() => setPeerTyping(false), 1500);
-    });
+    };
+    socket.on('code-update', onCodeUpdate);
 
-    // Real-Time Notes Sync from Peer
-    socket.on('notes-update', (updatedNotes) => {
+    const onNotesUpdate = (updatedNotes) => {
+      if (!isMounted) return;
       setNotes(updatedNotes);
-    });
+    };
+    socket.on('notes-update', onNotesUpdate);
 
-    // Real-Time Chat Message from Room
-    socket.on('chat-message', (msg) => {
-      setChatMessages(prev => [...prev, msg]);
-    });
+    const onChatMessage = (msg) => {
+      if (!msg || !isMounted) return;
+      setChatMessages(prev => {
+        if (prev.some(m => m.id === msg.id)) return prev;
+        return [...prev, msg];
+      });
+    };
+    socket.on('chat-message', onChatMessage);
 
-    // When peer leaves
-    socket.on('user-left', () => {
+    const onUserLeft = () => {
+      if (!isMounted) return;
       setPeerConnected(false);
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = null;
       }
-    });
+    };
+    socket.on('user-left', onUserLeft);
 
     return () => {
       isMounted = false;
-      socket.off('existing-users');
-      socket.off('user-joined');
-      socket.off('webrtc-offer');
-      socket.off('webrtc-answer');
-      socket.off('webrtc-ice-candidate');
-      socket.off('code-update');
-      socket.off('notes-update');
-      socket.off('chat-message');
-      socket.off('user-left');
+      socket.off('connect', onConnect);
+      socket.off('ready-to-call', onReadyToCall);
+      socket.off('peer-joined', onPeerJoined);
+      socket.off('webrtc-offer', onWebRTCOffer);
+      socket.off('webrtc-answer', onWebRTCAnswer);
+      socket.off('webrtc-ice-candidate', onWebRTCIceCandidate);
+      socket.off('room-history', onRoomHistory);
+      socket.off('code-update', onCodeUpdate);
+      socket.off('notes-update', onNotesUpdate);
+      socket.off('chat-message', onChatMessage);
+      socket.off('user-left', onUserLeft);
 
       if (peerConnectionRef.current) {
-        peerConnectionRef.current.close();
+        try {
+          peerConnectionRef.current.close();
+        } catch (e) {}
       }
       if (localStreamRef.current) {
+        if (localStreamRef.current._animInterval) {
+          clearInterval(localStreamRef.current._animInterval);
+        }
         localStreamRef.current.getTracks().forEach(t => t.stop());
+        localStreamRef.current = null;
       }
     };
-  }, [activeSession, roomId, currentUser, initLocalStream, createPeerConnection, socket]);
+  }, [activeSession, roomId, currentUser, initLocalStream, createPeerConnection, drainIceCandidates, socket]);
 
   // Media Controls (Real Microphone Mute/Unmute)
   const toggleMic = () => {
@@ -322,7 +467,6 @@ export default function Classroom() {
           }
 
           screenTrack.onended = () => {
-            // Restore camera on screen share stop
             restoreCamera();
           };
 
@@ -357,22 +501,22 @@ export default function Classroom() {
   const handleCodeChange = (e) => {
     const newCode = e.target.value;
     setCode(newCode);
-    socket.emit('code-change', { roomId, code: newCode });
+    if (roomId) socket.emit('code-change', { roomId, code: newCode });
   };
 
   // Real-Time Notes Change Broadcaster
   const handleNotesChange = (e) => {
     const newNotes = e.target.value;
     setNotes(newNotes);
-    socket.emit('notes-change', { roomId, notes: newNotes });
+    if (roomId) socket.emit('notes-change', { roomId, notes: newNotes });
   };
 
   // Real-Time Chat Broadcaster
   const handleSendMessage = (e) => {
     e.preventDefault();
-    if (!chatInput.trim()) return;
+    if (!chatInput.trim() || !roomId) return;
     const msg = {
-      id: 'm_' + Date.now(),
+      id: 'm_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
       sender: currentUser?.full_name || 'Student',
       text: chatInput.trim(),
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -382,27 +526,98 @@ export default function Classroom() {
   };
 
   const handleRunCode = () => {
-    setTerminalOutput(`[Executing Code in Real-Time Workspace]...\n✓ Status: Topic "${activeSession?.topic}" syntax compiled without errors.\n✓ Ready for AI Proof-of-Learning quiz verification.`);
-  };
-
-  const handleFastForward = () => {
-    setElapsedSeconds(45 * 60 + 5);
+    setTerminalOutput(`[Executing Code in Real-Time Workspace]...\n✓ Status: Topic "${activeSession?.topic || 'Coding'}" syntax compiled without errors.\n✓ Ready for AI Proof-of-Learning quiz verification.`);
   };
 
   if (!activeSession) {
+    const peers = profiles.filter(p => p.id !== currentUser?.id && p.email !== currentUser?.email);
+
     return (
-      <div style={{ maxWidth: '800px', margin: '80px auto', padding: '40px', textAlign: 'center' }}>
-        <div className="glass-panel" style={{ padding: '48px 32px' }}>
-          <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
+      <div style={{ maxWidth: '960px', margin: '40px auto', padding: '24px' }}>
+        <div className="glass-panel" style={{ padding: '36px', textAlign: 'center', marginBottom: '28px' }}>
+          <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
             <Video size={32} color="var(--accent-primary)" />
           </div>
-          <h2 style={{ fontSize: '1.6rem', marginBottom: '10px' }}>No Active Peer Classroom</h2>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem', marginBottom: '24px', maxWidth: '500px', margin: '0 auto 24px' }}>
-            To join a real-time 1-on-1 WebRTC video session with live code sync and AI verification, choose a peer from the Matchmaker.
+          <h2 style={{ fontSize: '1.6rem', marginBottom: '10px' }}>Peer WebRTC Classroom</h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem', maxWidth: '540px', margin: '0 auto 20px', lineHeight: '1.6' }}>
+            Connect with any fellow student for a live 1-on-1 WebRTC video session with live code sync, shared notes, room chat, and AI quiz verification.
           </p>
-          <button onClick={() => setActiveTab('matchmaker')} className="btn btn-primary">
+          <button onClick={() => setActiveTab('matchmaker')} className="btn btn-secondary">
             Explore Matchmaker <ChevronRight size={16} />
           </button>
+        </div>
+
+        {/* Quick Launch Cards for Available Peers */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+          <h3 style={{ fontSize: '1.2rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Users size={18} color="var(--accent-primary)" />
+            Start Instant 1-on-1 Class with a Peer ({peers.length})
+          </h3>
+          <span style={{ fontSize: '0.8rem', color: '#10b981', fontWeight: 600 }}>
+            {onlineUserIds.length} Online Now
+          </span>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
+          {peers.map(peer => {
+            const isOnline = onlineUserIds.includes(peer.id);
+            const teachSkill = peer.skills_teach?.[0] || 'Peer Exchange';
+            return (
+              <div 
+                key={peer.id}
+                className="glass-panel"
+                style={{
+                  padding: '20px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'space-between',
+                  border: isOnline ? '1.5px solid rgba(16, 185, 129, 0.4)' : '1px solid var(--border-subtle)',
+                  background: isOnline ? 'rgba(16, 185, 129, 0.05)' : 'var(--bg-card)'
+                }}
+              >
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                    <div style={{ position: 'relative' }}>
+                      <img
+                        src={peer.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(peer.full_name)}`}
+                        alt={peer.full_name}
+                        style={{ width: '48px', height: '48px', borderRadius: '14px', objectFit: 'cover' }}
+                      />
+                      <span style={{
+                        position: 'absolute',
+                        bottom: '-2px',
+                        right: '-2px',
+                        width: '10px',
+                        height: '10px',
+                        borderRadius: '50%',
+                        background: isOnline ? '#10b981' : '#6b7280',
+                        border: '2px solid #0b0f19'
+                      }} />
+                    </div>
+                    <div>
+                      <h4 style={{ fontSize: '0.95rem', color: '#fff' }}>{peer.full_name}</h4>
+                      <span style={{ fontSize: '0.72rem', color: isOnline ? '#34d399' : 'var(--text-dim)', fontWeight: 600 }}>
+                        {isOnline ? '🟢 Online Now' : '⚪ Offline'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '14px' }}>
+                    Teaches: <strong style={{ color: '#818cf8' }}>{teachSkill}</strong>
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => startDirectSession(peer, teachSkill)}
+                  className="btn btn-primary btn-sm"
+                  style={{ width: '100%', justifyContent: 'center', gap: '6px' }}
+                >
+                  <Video size={14} />
+                  Start Live Class with {peer.full_name.split(' ')[0]}
+                </button>
+              </div>
+            );
+          })}
         </div>
       </div>
     );

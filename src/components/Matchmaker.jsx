@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 
 export default function Matchmaker() {
-  const { profiles, currentUser, requestSession, onlineUserIds, showNotification } = useApp();
+  const { profiles, currentUser, requestSession, startDirectSession, onlineUserIds, showNotification } = useApp();
   const [searchQuery, setSearchQuery] = useState('');
 
   if (!currentUser) return null;
@@ -296,25 +296,45 @@ export default function Matchmaker() {
               </div>
 
               {/* Real Session Request Actions */}
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <button
-                  onClick={() => requestSession(peer, matchedTeach, 'learner')}
-                  className="btn btn-primary"
-                  style={{ flex: 1, padding: '10px', fontSize: '0.88rem' }}
-                  title="Sends live notification to this student to start a 1-on-1 session"
-                >
-                  <Bell size={16} />
-                  Request to Learn {matchedTeach} (1 Credit)
-                </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button
+                    onClick={() => requestSession(peer, matchedTeach, 'learner')}
+                    className="btn btn-primary"
+                    style={{ flex: 1, padding: '10px', fontSize: '0.88rem' }}
+                    title="Sends live notification to this student to start a 1-on-1 session"
+                  >
+                    <Bell size={16} />
+                    Request to Learn {matchedTeach} (1 Credit)
+                  </button>
+
+                  <button
+                    onClick={() => requestSession(peer, matchedLearn, 'teacher')}
+                    className="btn btn-secondary"
+                    style={{ padding: '10px' }}
+                    title="Offer to teach this student"
+                  >
+                    <GraduationCap size={16} />
+                    Teach
+                  </button>
+                </div>
 
                 <button
-                  onClick={() => requestSession(peer, matchedLearn, 'teacher')}
-                  className="btn btn-secondary"
-                  style={{ padding: '10px' }}
-                  title="Offer to teach this student"
+                  onClick={() => startDirectSession(peer, matchedTeach)}
+                  className="btn btn-sm"
+                  style={{
+                    background: isOnline ? 'rgba(16, 185, 129, 0.18)' : 'rgba(99, 102, 241, 0.15)',
+                    border: `1px solid ${isOnline ? 'rgba(16, 185, 129, 0.4)' : 'rgba(99, 102, 241, 0.3)'}`,
+                    color: isOnline ? '#34d399' : '#a5b4fc',
+                    fontWeight: 700,
+                    width: '100%',
+                    justifyContent: 'center',
+                    gap: '6px'
+                  }}
+                  title="Directly launch 1-on-1 WebRTC Video Classroom with this peer"
                 >
-                  <GraduationCap size={16} />
-                  Teach
+                  <Video size={14} />
+                  ⚡ Instant Connect Live Classroom ({isOnline ? 'Peer Online' : 'Connect'})
                 </button>
               </div>
 

@@ -88,5 +88,30 @@ export const api = {
     } catch (err) {
       console.warn('API transferToken notice:', err);
     }
+  },
+
+  async getActiveSession(userId) {
+    try {
+      const res = await fetch(`${BASE_URL}/api/active-session/${userId}`);
+      if (res.ok) {
+        const data = await res.json();
+        return data.session;
+      }
+    } catch (err) {
+      console.warn('API getActiveSession notice:', err);
+    }
+    return null;
+  },
+
+  async endSession(roomId, userId) {
+    try {
+      await fetch(`${BASE_URL}/api/end-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roomId, userId })
+      });
+    } catch (err) {
+      console.warn('API endSession notice:', err);
+    }
   }
 };

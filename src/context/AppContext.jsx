@@ -14,7 +14,26 @@ export function AppProvider({ children }) {
   });
   const [onlineUserIds, setOnlineUserIds] = useState([]);
   const [incomingRequest, setIncomingRequest] = useState(null);
-  const [activeSession, setActiveSession] = useState(null);
+  
+  // Persist activeSession in localStorage and sync with server
+  const [activeSession, setActiveSessionState] = useState(() => {
+    try {
+      const saved = localStorage.getItem('skillswap_active_session');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const setActiveSession = useCallback((sess) => {
+    setActiveSessionState(sess);
+    if (sess) {
+      localStorage.setItem('skillswap_active_session', JSON.stringify(sess));
+    } else {
+      localStorage.removeItem('skillswap_active_session');
+    }
+  }, []);
+
   const [isQuizOpen, setIsQuizOpen] = useState(false);
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
   const [transactions, setTransactions] = useState([]);
@@ -29,22 +48,37 @@ export function AppProvider({ children }) {
     setTransactions(txs);
   }, []);
 
-  // Socket and Presence lifecycle
+  // Sync active session from server on startup/login
+  useEffect(() => {
+    if (currentUser?.id) {
+      api.getActiveSession(currentUser.id).then(sess => {
+        if (sess) {
+          setActiveSession(sess);
+        }
+      });
+    }
+  }, [currentUser?.id, setActiveSession]);
+
+  // Socket and Presence lifecycle (with resilient reconnect support)
   useEffect(() => {
     refreshData();
     const socket = getSocket();
 
-    // Register presence when currentUser exists
-    if (currentUser) {
-      socket.emit('register-presence', currentUser);
-    }
+    const registerPresence = () => {
+      if (currentUser) {
+        socket.emit('register-presence', currentUser);
+      }
+    };
+
+    registerPresence();
+    socket.on('connect', registerPresence);
 
     // 1. Presence Updates
     socket.on('online-presence-update', ({ onlineUserIds }) => {
       setOnlineUserIds(onlineUserIds || []);
     });
 
-    // 2. Incoming Session Request Notification ("oruthanaga teach pannura mari iruntha avangaluku notification poganum")
+    // 2. Incoming Session Request Notification
     socket.on('incoming-session-request', (reqData) => {
       console.log('🔔 Received incoming session request:', reqData);
       setIncomingRequest(reqData);
@@ -63,7 +97,7 @@ export function AppProvider({ children }) {
       showNotification(`${byUserName} is currently unable to teach ${topic}.`, 'warning');
     });
 
-    // 4. Session Start Broadcast (when teacher accepts)
+    // 4. Session Start Broadcast (when teacher accepts or direct start)
     socket.on('session-accepted-and-start', (sessionData) => {
       console.log('🚀 Both users starting session:', sessionData);
       setIncomingRequest(null);
@@ -78,6 +112,7 @@ export function AppProvider({ children }) {
     });
 
     return () => {
+      socket.off('connect', registerPresence);
       socket.off('online-presence-update');
       socket.off('incoming-session-request');
       socket.off('session-request-sent');
@@ -86,7 +121,7 @@ export function AppProvider({ children }) {
       socket.off('session-accepted-and-start');
       socket.off('token-balance-updated');
     };
-  }, [currentUser, refreshData]);
+  }, [currentUser, refreshData, setActiveSession]);
 
   const showNotification = (message, type = 'info') => {
     setNotification({ message, type });
@@ -162,7 +197,22 @@ export function AppProvider({ children }) {
     return true;
   };
 
-  // Direct start fallback
+  // Direct start instant session
+  const startDirectSession = (peer, topic) => {
+    if (!currentUser) {
+      showNotification('Please register or log in first.', 'warning');
+      return false;
+    }
+    const socket = getSocket();
+    socket.emit('start-direct-session', {
+      fromUser: currentUser,
+      toUser: peer,
+      topic: topic || peer.skills_teach?.[0] || 'Peer Learning Session'
+    });
+    showNotification(`Connecting directly with ${peer.full_name}...`, 'info');
+    return true;
+  };
+
   const startSession = (partner, topic, role = 'learner') => {
     return requestSession(partner, topic, role);
   };
@@ -220,6 +270,7 @@ export function AppProvider({ children }) {
         activeSession.topic
       );
 
+      await api.endSession(activeSession.roomId, activeSession.learner.id);
       await refreshData();
 
       showNotification(`🎉 Verification PASSED! 1 Time-Credit Token transferred from ${activeSession.learner.full_name} to ${activeSession.teacher.full_name}!`, 'success');
@@ -267,6 +318,7 @@ export function AppProvider({ children }) {
         activeSession,
         setActiveSession,
         startSession,
+        startDirectSession,
         requestSession,
         triggerEndSession,
         isQuizOpen,
